@@ -8,6 +8,8 @@ publish = false
 path = "src/terminal.rs"
 doctest = false
 
+[features]
+test-support = []
 
 [dependencies]
 gpui = { path = "../gpui" }

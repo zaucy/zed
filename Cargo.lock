@@ -1521,6 +1521,7 @@ dependencies = [
  "sha-1 0.9.8",
  "smallvec",
  "sqlx",
+ "terminal",
  "text",
  "theme",
  "time",

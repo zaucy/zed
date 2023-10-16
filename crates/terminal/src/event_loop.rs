@@ -229,6 +229,7 @@ where
         let mut terminal = None;
 
         loop {
+            // COPY THIS DATA INTO SOMETHING AT SOME POINT
             // Read from the PTY.
             match self.pty.reader().read(&mut buf[unprocessed..]) {
                 // This is received on Windows/macOS when no more data is readable from the PTY.

@@ -13,7 +13,18 @@ pub struct Terminals {
     pub(crate) local_handles: Vec<WeakModelHandle<terminal::Terminal>>,
 }
 
+pub type TerminalId = u64;
+
 impl Project {
+    pub fn create_remote_terminal(
+        &mut self,
+        remote_terminal_id: TerminalId,
+        window: AnyWindowHandle,
+        cx: &mut ModelContext<Self>,
+    ) -> anyhow::Result<ModelHandle<Terminal>> {
+        todo!();
+    }
+
     pub fn create_terminal(
         &mut self,
         working_directory: Option<PathBuf>,

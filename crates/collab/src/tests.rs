@@ -9,6 +9,7 @@ mod integration_tests;
 mod random_channel_buffer_tests;
 mod random_project_collaboration_tests;
 mod randomized_test_helpers;
+mod terminal_tests;
 mod test_server;
 
 pub use randomized_test_helpers::{

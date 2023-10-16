@@ -22,9 +22,10 @@ use alacritty_terminal::{
 };
 use anyhow::{bail, Result};
 
+use event_loop::{EventLoop, Msg, Notifier};
 use futures::{
     channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender},
-    FutureExt,
+    Future, FutureExt,
 };
 
 use mappings::mouse::{
@@ -56,18 +57,12 @@ use gpui::{
     AnyWindowHandle, AppContext, ClipboardItem, Entity, ModelContext, Task,
 };
 
-use crate::{
-    event_loop::{EventLoop, Msg, Notifier},
-    mappings::{
-        colors::{get_color_at_index, to_alac_rgb},
-        keys::to_esc_str,
-    },
+use crate::mappings::{
+    colors::{get_color_at_index, to_alac_rgb},
+    keys::to_esc_str,
 };
 use lazy_static::lazy_static;
 
-///Scrolling is unbearably sluggish by default. Alacritty supports a configurable
-///Scroll multiplier that is set to 3 by default. This will be removed when I
-///Implement scroll bars.
 const SCROLL_MULTIPLIER: f32 = 4.;
 const MAX_SEARCH_LINES: usize = 100;
 const DEBUG_TERMINAL_WIDTH: f32 = 500.;
@@ -467,7 +462,7 @@ impl TerminalBuilder {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct IndexedCell {
     pub point: Point,
     pub cell: Cell,
@@ -1338,6 +1333,19 @@ impl Terminal {
 
     pub fn can_navigate_to_selected_word(&self) -> bool {
         self.cmd_pressed && self.hovered_word
+    }
+
+    pub fn share(&mut self) -> anyhow::Result<u64> {
+        todo!()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn wait_for_text(
+        &mut self,
+        text: &str,
+        timeout: Duration,
+    ) -> impl Future<Output = Result<()>> {
+        async { Ok(()) }
     }
 }
 
