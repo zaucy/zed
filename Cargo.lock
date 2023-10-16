@@ -7955,6 +7955,8 @@ dependencies = [
  "itertools 0.10.5",
  "lazy_static",
  "libc",
+ "log",
+ "mio 0.6.23",
  "mio-extras",
  "ordered-float 2.10.0",
  "procinfo",

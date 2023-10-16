@@ -1,3 +1,4 @@
+mod event_loop;
 pub mod mappings;
 pub use alacritty_terminal;
 pub mod terminal_settings;
@@ -6,7 +7,6 @@ use alacritty_terminal::{
     ansi::{ClearMode, Handler},
     config::{Config, Program, PtyConfig, Scrolling},
     event::{Event as AlacTermEvent, EventListener, Notify, WindowSize},
-    event_loop::{EventLoop, Msg, Notifier},
     grid::{Dimensions, Scroll as AlacScroll},
     index::{Boundary, Column, Direction as AlacDirection, Line, Point},
     selection::{Selection, SelectionRange, SelectionType},
@@ -56,9 +56,12 @@ use gpui::{
     AnyWindowHandle, AppContext, ClipboardItem, Entity, ModelContext, Task,
 };
 
-use crate::mappings::{
-    colors::{get_color_at_index, to_alac_rgb},
-    keys::to_esc_str,
+use crate::{
+    event_loop::{EventLoop, Msg, Notifier},
+    mappings::{
+        colors::{get_color_at_index, to_alac_rgb},
+        keys::to_esc_str,
+    },
 };
 use lazy_static::lazy_static;
 
