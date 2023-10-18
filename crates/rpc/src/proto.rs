@@ -276,8 +276,11 @@ messages!(
     (UpdateChannelBufferCollaborators, Foreground),
     (AckBufferOperation, Background),
     (AckChannelMessage, Background),
+    (ShareTerminal, Foreground),
+    (ShareTerminalResponse, Foreground),
 );
 
+// Type-safe request-response messages, where request and response are bound together.
 request_messages!(
     (ApplyCodeAction, ApplyCodeActionResponse),
     (
@@ -357,9 +360,11 @@ request_messages!(
     (UpdateProject, Ack),
     (UpdateWorktree, Ack),
     (JoinChannelBuffer, JoinChannelBufferResponse),
-    (LeaveChannelBuffer, Ack)
+    (LeaveChannelBuffer, Ack),
+    (ShareTerminal, ShareTerminalResponse),
 );
 
+// Creates an entity on both sides of the wire that messages are automatically routed to.
 entity_messages!(
     project_id,
     AddProjectCollaborator,
@@ -409,7 +414,7 @@ entity_messages!(
     UpdateProjectCollaborator,
     UpdateWorktree,
     UpdateWorktreeSettings,
-    UpdateDiffBase
+    UpdateDiffBase,
 );
 
 entity_messages!(

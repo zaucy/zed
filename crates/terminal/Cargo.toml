@@ -12,6 +12,7 @@ doctest = false
 test-support = []
 
 [dependencies]
+client = { path = "../client" }
 gpui = { path = "../gpui" }
 settings = { path = "../settings" }
 db = { path = "../db" }

@@ -173,7 +173,10 @@ message Envelope {
         LinkChannel link_channel = 142;
         UnlinkChannel unlink_channel = 143;
         MoveChannel move_channel = 144;
-        SetChannelVisibility set_channel_visibility = 147; // current max: 147
+        SetChannelVisibility set_channel_visibility = 147;
+
+        ShareTerminal share_terminal = 148;
+        ShareTerminalResponse share_terminal_response = 149; // current max: 149
     }
 }
 
@@ -1588,4 +1591,12 @@ message UpdateDiffBase {
     uint64 project_id = 1;
     uint64 buffer_id = 2;
     optional string diff_base = 3;
+}
+
+message ShareTerminal {
+    string cwd = 1;
+}
+
+message ShareTerminalResponse {
+    uint64 remote_id = 1;
 }
