@@ -20,8 +20,9 @@ use alacritty_terminal::{
     tty::{self, setup_env},
     Term,
 };
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
+use client::{proto, Client};
 use event_loop::{EventLoop, Msg, Notifier};
 use futures::{
     channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender},
@@ -287,6 +288,7 @@ impl TerminalBuilder {
         blink_settings: Option<TerminalBlink>,
         alternate_scroll: AlternateScroll,
         window: AnyWindowHandle,
+        client: Arc<Client>,
     ) -> Result<TerminalBuilder> {
         let pty_config = {
             let alac_shell = match shell.clone() {
@@ -392,6 +394,8 @@ impl TerminalBuilder {
             selection_phase: SelectionPhase::Ended,
             cmd_pressed: false,
             hovered_word: false,
+            client,
+            remote_id: None,
         };
 
         Ok(TerminalBuilder {
@@ -545,6 +549,8 @@ pub struct Terminal {
     selection_phase: SelectionPhase,
     cmd_pressed: bool,
     hovered_word: bool,
+    client: Arc<Client>,
+    remote_id: Option<u64>,
 }
 
 impl Terminal {
@@ -1335,8 +1341,33 @@ impl Terminal {
         self.cmd_pressed && self.hovered_word
     }
 
-    pub fn share(&mut self) -> anyhow::Result<u64> {
-        todo!()
+    pub fn share(&mut self, cx: &mut ModelContext<Self>) -> Task<anyhow::Result<u64>> {
+        match self.remote_id {
+            Some(remote_id) => return Task::ready(Ok(remote_id)),
+            None => {
+                let info = match self
+                    .foreground_process_info
+                    .as_ref()
+                    .context("no foreground process info during sharing")
+                {
+                    Ok(info) => info,
+                    Err(e) => {
+                        return Task::ready(Err(e).context("missing foreground process info"))
+                    }
+                };
+                let client = Arc::clone(&self.client);
+                let request = proto::ShareTerminal {
+                    cwd: info.cwd.to_string_lossy().to_string(),
+                };
+                cx.spawn(|_, _| async move {
+                    Ok(client
+                        .request(request)
+                        .await
+                        .context("terminal sharing")?
+                        .remote_id)
+                })
+            }
+        }
     }
 
     #[cfg(any(test, feature = "test-support"))]

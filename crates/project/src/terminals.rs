@@ -47,6 +47,7 @@ impl Project {
                 Some(settings.blinking.clone()),
                 settings.alternate_scroll,
                 window,
+                self.client(),
             )
             .map(|builder| {
                 let terminal_handle = cx.add_model(|cx| builder.subscribe(cx));

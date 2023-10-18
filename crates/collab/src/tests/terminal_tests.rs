@@ -4,7 +4,6 @@ use call::ActiveCall;
 
 use gpui::{executor::Deterministic, test::EmptyView, TestAppContext};
 use serde_json::json;
-use settings::SettingsStore;
 
 use crate::tests::TestServer;
 
@@ -44,7 +43,8 @@ async fn test_terminal_sharing(
 
     // Share the terminal in A
     let terminal_a_remote_id = terminal_a
-        .update(cx_a, |terminal, _| terminal.share())
+        .update(cx_a, |terminal, cx| terminal.share(cx))
+        .await
         .unwrap();
 
     // Open the terminal in B

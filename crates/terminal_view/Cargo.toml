@@ -9,6 +9,7 @@ path = "src/terminal_view.rs"
 doctest = false
 
 [dependencies]
+client = { path = "../client" }
 context_menu = { path = "../context_menu" }
 editor = { path = "../editor" }
 language = { path = "../language" }
