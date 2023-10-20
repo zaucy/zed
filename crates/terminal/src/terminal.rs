@@ -62,7 +62,6 @@ use crate::mappings::{
     colors::{get_color_at_index, to_alac_rgb},
     keys::to_esc_str,
 };
-use lazy_static::lazy_static;
 
 const SCROLL_MULTIPLIER: f32 = 4.;
 const MAX_SEARCH_LINES: usize = 100;
@@ -70,15 +69,6 @@ const DEBUG_TERMINAL_WIDTH: f32 = 500.;
 const DEBUG_TERMINAL_HEIGHT: f32 = 30.;
 const DEBUG_CELL_WIDTH: f32 = 5.;
 const DEBUG_LINE_HEIGHT: f32 = 5.;
-
-lazy_static! {
-    // Regex Copied from alacritty's ui_config.rs and modified its declaration slightly:
-    // * avoid Rust-specific escaping.
-    // * use more strict regex for `file://` protocol matching: original regex has `file:` inside, but we want to avoid matching `some::file::module` strings.
-    static ref URL_REGEX: RegexSearch = RegexSearch::new(r#"(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|file://|git://|ssh:|ftp://)[^\u{0000}-\u{001F}\u{007F}-\u{009F}<>"\s{-}\^⟨⟩`]+"#).unwrap();
-
-    static ref WORD_REGEX: RegexSearch = RegexSearch::new(r#"[\w.\[\]:/@\-~]+"#).unwrap();
-}
 
 ///Upward flowing events, for changing the title and such
 #[derive(Clone, Debug)]
@@ -97,7 +87,7 @@ pub enum Event {
 /// A string inside terminal, potentially useful as a URI that can be opened.
 #[derive(Clone, Debug)]
 pub enum MaybeNavigationTarget {
-    /// HTTP, git, etc. string determined by the [`URL_REGEX`] regex.
+    /// HTTP, git, etc. string determined by the `Terminal::url_regex` regex.
     Url(String),
     /// File system path, absolute or relative, existing or not.
     /// Might have line and column number(s) attached as `file.rs:1:23`
@@ -375,6 +365,8 @@ impl TerminalBuilder {
         let _io_thread = event_loop.spawn();
 
         let terminal = Terminal {
+             url_regex: RegexSearch::new(r#"(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|file://|git://|ssh:|ftp://)[^\u{0000}-\u{001F}\u{007F}-\u{009F}<>"\s{-}\^⟨⟩`]+"#).unwrap(),
+            word_regex: RegexSearch::new(r#"[\w.\[\]:/@\-~]+"#).unwrap(),
             pty_tx: Notifier(pty_tx),
             term,
             events: VecDeque::with_capacity(10), //Should never get this high.
@@ -528,6 +520,8 @@ pub enum SelectionPhase {
 }
 
 pub struct Terminal {
+    url_regex: RegexSearch,
+    word_regex: RegexSearch,
     pty_tx: Notifier,
     term: Arc<FairMutex<Term<ZedListener>>>,
     events: VecDeque<InternalEvent>,
@@ -645,7 +639,7 @@ impl Terminal {
 
                 self.last_content.size = new_size.clone();
 
-                self.pty_tx.0.send(Msg::Resize((new_size).into())).ok();
+                self.pty_tx.0.send(Msg::Resize((new_size).into()));
 
                 term.resize(new_size);
             }
@@ -760,7 +754,7 @@ impl Terminal {
                     let url_match = min_index..=max_index;
 
                     Some((url, true, url_match))
-                } else if let Some(word_match) = regex_match_at(term, point, &WORD_REGEX) {
+                } else if let Some(word_match) = regex_match_at(term, point, &mut self.word_regex) {
                     let maybe_url_or_path =
                         term.bounds_to_string(*word_match.start(), *word_match.end());
                     let original_match = word_match.clone();
@@ -777,7 +771,7 @@ impl Terminal {
                             (word_match, maybe_url_or_path)
                         };
 
-                    let is_url = match regex_match_at(term, point, &URL_REGEX) {
+                    let is_url = match regex_match_at(term, point, &mut self.url_regex) {
                         Some(url_match) => {
                             // `]` is a valid symbol in the `file://` URL, so the regex match will include it
                             // consider that when ensuring that the URL match is the same as the original word
@@ -1294,14 +1288,14 @@ impl Terminal {
 
     pub fn find_matches(
         &mut self,
-        searcher: RegexSearch,
+        mut searcher: RegexSearch,
         cx: &mut ModelContext<Self>,
     ) -> Task<Vec<RangeInclusive<Point>>> {
         let term = self.term.clone();
         cx.background().spawn(async move {
             let term = term.lock();
 
-            all_search_matches(&term, &searcher).collect()
+            all_search_matches(&term, &mut searcher).collect()
         })
     }
 
@@ -1382,7 +1376,7 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        self.pty_tx.0.send(Msg::Shutdown).ok();
+        self.pty_tx.0.send(Msg::Shutdown);
     }
 }
 
@@ -1392,7 +1386,7 @@ impl Entity for Terminal {
 
 /// Based on alacritty/src/display/hint.rs > regex_match_at
 /// Retrieve the match, if the specified point is inside the content matching the regex.
-fn regex_match_at<T>(term: &Term<T>, point: Point, regex: &RegexSearch) -> Option<Match> {
+fn regex_match_at<T>(term: &Term<T>, point: Point, regex: &mut RegexSearch) -> Option<Match> {
     visible_regex_match_iter(term, regex).find(|rm| rm.contains(&point))
 }
 
@@ -1400,7 +1394,7 @@ fn regex_match_at<T>(term: &Term<T>, point: Point, regex: &RegexSearch) -> Optio
 /// Iterate over all visible regex matches.
 pub fn visible_regex_match_iter<'a, T>(
     term: &'a Term<T>,
-    regex: &'a RegexSearch,
+    regex: &'a mut RegexSearch,
 ) -> impl Iterator<Item = Match> + 'a {
     let viewport_start = Line(-(term.grid().display_offset() as i32));
     let viewport_end = viewport_start + term.bottommost_line();
@@ -1422,7 +1416,7 @@ fn make_selection(range: &RangeInclusive<Point>) -> Selection {
 
 fn all_search_matches<'a, T>(
     term: &'a Term<T>,
-    regex: &'a RegexSearch,
+    regex: &'a mut RegexSearch,
 ) -> impl Iterator<Item = Match> + 'a {
     let start = Point::new(term.grid().topmost_line(), Column(0));
     let end = Point::new(term.grid().bottommost_line(), term.grid().last_column());
