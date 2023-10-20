@@ -1353,12 +1353,19 @@ impl Terminal {
                 let request = proto::ShareTerminal {
                     cwd: info.cwd.to_string_lossy().to_string(),
                 };
-                cx.spawn(|_, _| async move {
-                    Ok(client
+
+                cx.spawn(|this, mut cx| async move {
+                    let remote_id = client
                         .request(request)
                         .await
                         .context("terminal sharing")?
-                        .remote_id)
+                        .remote_id;
+
+                    this.update(&mut cx, |terminal, _| {
+                        terminal.remote_id = Some(remote_id);
+                    });
+
+                    Ok(remote_id)
                 })
             }
         }
