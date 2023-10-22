@@ -175,8 +175,9 @@ message Envelope {
         MoveChannel move_channel = 144;
         SetChannelVisibility set_channel_visibility = 147;
 
-        ShareTerminal share_terminal = 148;
-        ShareTerminalResponse share_terminal_response = 149; // current max: 149
+        UpdateTerminals update_terminals = 148;
+        OpenTerminal open_terminal = 149;
+        OpenTerminalResponse open_terminal_response = 150; // current max: 150
     }
 }
 
@@ -1309,6 +1310,11 @@ message UpdateView {
 
     oneof variant {
         Editor editor = 3;
+        Terminal terminal = 4;
+    }
+
+    message Terminal {
+        int32 scroll_y = 1;
     }
 
     message Editor {
@@ -1329,6 +1335,7 @@ message View {
     oneof variant {
         Editor editor = 3;
         ChannelView channel_view = 4;
+        Terminal terminal = 5;
     }
 
     message Editor {
@@ -1345,6 +1352,11 @@ message View {
     message ChannelView {
         uint64 channel_id = 1;
         Editor editor = 2;
+    }
+
+    message Terminal {
+        uint64 terminal_id = 1;
+        int32 scroll_y = 2;
     }
 }
 
@@ -1593,10 +1605,30 @@ message UpdateDiffBase {
     optional string diff_base = 3;
 }
 
-message ShareTerminal {
-    string cwd = 1;
+// Guest request to host
+message OpenTerminal {
+    uint64 id = 1;
 }
 
-message ShareTerminalResponse {
-    uint64 remote_id = 1;
+message OpenTerminalResponse {
+    uint64 id = 1;
+    string vte_state = 2;
+    string visible_terminal_cells = 3;
+}
+
+// Host broadcasts to all guests who have terminal open
+message UpdateTerminal {
+    uint64 terminal_id = 1;
+    bytes data = 2;
+    bool stop = 3;
+}
+
+// Host broadcasts to all guests
+message UpdateTerminals {
+    repeated Terminal terminals = 1;
+}
+
+message Terminal {
+    uint64 id = 1;
+    optional string title = 2;
 }

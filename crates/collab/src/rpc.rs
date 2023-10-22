@@ -279,8 +279,9 @@ impl Server {
             .add_message_handler(update_diff_base)
             .add_request_handler(get_private_user_info)
             .add_message_handler(acknowledge_channel_message)
-            .add_message_handler(acknowledge_buffer_version)
-            .add_request_handler(share_terminal);
+            .add_message_handler(acknowledge_buffer_version);
+        // TODO kb
+        // .add_request_handler(share_terminal);
 
         Arc::new(server)
     }
@@ -3421,16 +3422,17 @@ async fn leave_channel_buffers_for_session(session: &Session) -> Result<()> {
     Ok(())
 }
 
-async fn share_terminal(
-    request: proto::ShareTerminal,
-    response: Response<proto::ShareTerminal>,
-    session: Session,
-) -> Result<()> {
-    let cwd = request.cwd;
-    // Sending is seperate from the actual response
-    response.send(proto::ShareTerminalResponse { remote_id: 1 })?;
-    Ok(())
-}
+// TODO kb add collab code for streaming the terminal contents
+// async fn share_terminal(
+//     request: proto::ShareTerminal,
+//     response: Response<proto::ShareTerminal>,
+//     session: Session,
+// ) -> Result<()> {
+//     let title = request.title;
+//     // Sending is seperate from the actual response
+//     response.send(proto::ShareTerminalResponse { remote_id: 1 })?;
+//     Ok(())
+// }
 
 fn project_left(project: &db::LeftProject, session: &Session) {
     for connection_id in &project.connection_ids {

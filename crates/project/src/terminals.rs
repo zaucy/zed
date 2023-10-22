@@ -1,5 +1,7 @@
 use crate::Project;
+use anyhow::Context;
 use gpui::{AnyWindowHandle, ModelContext, ModelHandle, WeakModelHandle};
+use rpc::proto::OpenTerminal;
 use std::path::{Path, PathBuf};
 use terminal::{
     terminal_settings::{self, TerminalSettings, VenvSettingsContent},
@@ -16,12 +18,18 @@ pub struct Terminals {
 pub type TerminalId = u64;
 
 impl Project {
-    pub fn create_remote_terminal(
+    pub fn open_remote_terminal(
         &mut self,
         remote_terminal_id: TerminalId,
         window: AnyWindowHandle,
         cx: &mut ModelContext<Self>,
     ) -> anyhow::Result<ModelHandle<Terminal>> {
+        let z = self
+            .client
+            .send(OpenTerminal {
+                id: remote_terminal_id,
+            })
+            .context("remote terminal creation message send")?;
         todo!();
     }
 

@@ -420,6 +420,10 @@ impl ActiveCall {
             report_call_event_for_room(operation, room.id(), room.channel_id(), &self.client, cx);
         }
     }
+
+    pub fn shared_terminals(&self) -> Vec<u64> {
+        todo!("TODO kb")
+    }
 }
 
 pub fn report_call_event_for_room(

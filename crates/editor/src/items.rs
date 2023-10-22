@@ -281,6 +281,7 @@ impl FollowableItem for Editor {
                 }
                 _ => false,
             },
+            update_view::Variant::Terminal(_) => todo!("TODO kb"),
         }
     }
 
@@ -290,11 +291,15 @@ impl FollowableItem for Editor {
         message: update_view::Variant,
         cx: &mut ViewContext<Self>,
     ) -> Task<Result<()>> {
-        let update_view::Variant::Editor(message) = message;
-        let project = project.clone();
-        cx.spawn(|this, mut cx| async move {
-            update_editor_from_message(this, project, message, &mut cx).await
-        })
+        match message {
+            update_view::Variant::Editor(message) => {
+                let project = project.clone();
+                cx.spawn(|this, mut cx| async move {
+                    update_editor_from_message(this, project, message, &mut cx).await
+                })
+            }
+            update_view::Variant::Terminal(_) => todo!("TODO kb"),
+        }
     }
 
     fn should_unfollow_on_event(event: &Self::Event, _: &AppContext) -> bool {

@@ -276,8 +276,9 @@ messages!(
     (UpdateChannelBufferCollaborators, Foreground),
     (AckBufferOperation, Background),
     (AckChannelMessage, Background),
-    (ShareTerminal, Foreground),
-    (ShareTerminalResponse, Foreground),
+    (UpdateTerminals, Foreground),
+    (OpenTerminal, Foreground),
+    (OpenTerminalResponse, Foreground),
 );
 
 // Type-safe request-response messages, where request and response are bound together.
@@ -361,7 +362,8 @@ request_messages!(
     (UpdateWorktree, Ack),
     (JoinChannelBuffer, JoinChannelBufferResponse),
     (LeaveChannelBuffer, Ack),
-    (ShareTerminal, ShareTerminalResponse),
+    (UpdateTerminals, Ack),
+    (OpenTerminal, OpenTerminalResponse),
 );
 
 // Creates an entity on both sides of the wire that messages are automatically routed to.

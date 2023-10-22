@@ -1335,42 +1335,6 @@ impl Terminal {
         self.cmd_pressed && self.hovered_word
     }
 
-    pub fn share(&mut self, cx: &mut ModelContext<Self>) -> Task<anyhow::Result<u64>> {
-        match self.remote_id {
-            Some(remote_id) => return Task::ready(Ok(remote_id)),
-            None => {
-                let info = match self
-                    .foreground_process_info
-                    .as_ref()
-                    .context("no foreground process info during sharing")
-                {
-                    Ok(info) => info,
-                    Err(e) => {
-                        return Task::ready(Err(e).context("missing foreground process info"))
-                    }
-                };
-                let client = Arc::clone(&self.client);
-                let request = proto::ShareTerminal {
-                    cwd: info.cwd.to_string_lossy().to_string(),
-                };
-
-                cx.spawn(|this, mut cx| async move {
-                    let remote_id = client
-                        .request(request)
-                        .await
-                        .context("terminal sharing")?
-                        .remote_id;
-
-                    this.update(&mut cx, |terminal, _| {
-                        terminal.remote_id = Some(remote_id);
-                    });
-
-                    Ok(remote_id)
-                })
-            }
-        }
-    }
-
     #[cfg(any(test, feature = "test-support"))]
     pub fn wait_for_text(
         &mut self,
