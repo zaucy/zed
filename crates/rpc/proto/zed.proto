@@ -1607,28 +1607,25 @@ message UpdateDiffBase {
 
 // Guest request to host
 message OpenTerminal {
-    uint64 id = 1;
+    uint64 project_id = 1;
+    uint64 id = 2;
 }
 
 message OpenTerminalResponse {
-    uint64 id = 1;
-    string vte_state = 2;
-    string visible_terminal_cells = 3;
+    string vte_state = 1;
+    string visible_terminal_cells = 2;
 }
 
 // Host broadcasts to all guests who have terminal open
 message UpdateTerminal {
-    uint64 terminal_id = 1;
-    bytes data = 2;
-    bool stop = 3;
+    uint64 project_id = 1;
+    uint64 terminal_id = 2;
+    bytes data = 3;
+    bool stop = 4;
 }
 
 // Host broadcasts to all guests
 message UpdateTerminals {
-    repeated Terminal terminals = 1;
-}
-
-message Terminal {
-    uint64 id = 1;
-    optional string title = 2;
+    uint64 project_id = 1;
+    repeated uint64 terminals = 2;
 }

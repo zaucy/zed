@@ -1,25 +1,90 @@
 use crate::Project;
 use anyhow::Context;
-use gpui::{AnyWindowHandle, ModelContext, ModelHandle, WeakModelHandle};
-use rpc::proto::OpenTerminal;
-use std::path::{Path, PathBuf};
+use client::Client;
+use gpui::{
+    AnyWindowHandle, AppContext, AsyncAppContext, ModelContext, ModelHandle, WeakModelHandle,
+};
+use rpc::{
+    proto::{self, OpenTerminal, OpenTerminalResponse, UpdateTerminals},
+    TypedEnvelope,
+};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use terminal::{
     terminal_settings::{self, TerminalSettings, VenvSettingsContent},
     Terminal, TerminalBuilder,
 };
+use util::ResultExt;
 
 #[cfg(target_os = "macos")]
 use std::os::unix::ffi::OsStrExt;
 
-pub struct Terminals {
-    pub(crate) local_handles: Vec<WeakModelHandle<terminal::Terminal>>,
-}
-
 pub type TerminalId = u64;
 
+#[derive(Default)]
+pub struct Terminals {
+    pub(crate) local_handles: Vec<WeakModelHandle<terminal::Terminal>>,
+    pub(crate) remote_ids: Vec<TerminalId>,
+}
+
 impl Project {
+    pub fn init_terminals(client: &Arc<Client>, _: &mut AppContext) {
+        client.add_model_message_handler(Self::handle_update_terminals);
+        client.add_model_request_handler(Self::handle_open_terminal);
+    }
+
+    pub fn shared_terminals(&self) -> &[TerminalId] {
+        &self.terminals.remote_ids
+    }
+
+    pub async fn handle_update_terminals(
+        this: ModelHandle<Self>,
+        envelope: TypedEnvelope<proto::UpdateTerminals>,
+        _: Arc<Client>,
+        mut cx: AsyncAppContext,
+    ) -> anyhow::Result<()> {
+        this.update(&mut cx, |this, cx| {
+            this.terminals.remote_ids = envelope.payload.terminals;
+            cx.notify();
+        });
+        Ok(())
+    }
+
+    pub async fn handle_open_terminal(
+        this: ModelHandle<Self>,
+        envelope: TypedEnvelope<proto::OpenTerminal>,
+        _: Arc<Client>,
+        cx: AsyncAppContext,
+    ) -> anyhow::Result<OpenTerminalResponse> {
+        let terminal_id = envelope.payload.id as usize;
+        let terminal = this
+            .read_with(&cx, |this, cx| {
+                this.terminals.local_handles.iter().find_map(|handle| {
+                    if handle.id() == terminal_id {
+                        Some(handle.upgrade(cx)?)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .with_context(|| format!("no terminal found for {terminal_id}"))?;
+
+        terminal.read_with(&cx, |terminal, cx| {
+            // 1. We need to make sure we have synchronized with the terminal, before we do this
+            // 2. We need to pull both sets of state out of the event loop.
+        });
+
+        Ok(OpenTerminalResponse {
+            vte_state: todo!("TODO kb"),
+            visible_terminal_cells: todo!(),
+        })
+    }
+
     pub fn open_remote_terminal(
         &mut self,
+        project_id: u64,
         remote_terminal_id: TerminalId,
         window: AnyWindowHandle,
         cx: &mut ModelContext<Self>,
@@ -27,10 +92,11 @@ impl Project {
         let z = self
             .client
             .send(OpenTerminal {
+                project_id,
                 id: remote_terminal_id,
             })
             .context("remote terminal creation message send")?;
-        todo!();
+        todo!("TODO kb");
     }
 
     pub fn create_terminal(
@@ -47,8 +113,7 @@ impl Project {
             let settings = settings::get::<TerminalSettings>(cx);
             let python_settings = settings.detect_venv.clone();
             let shell = settings.shell.clone();
-
-            let terminal = TerminalBuilder::new(
+            TerminalBuilder::new(
                 working_directory.clone(),
                 shell.clone(),
                 settings.env.clone(),
@@ -84,10 +149,23 @@ impl Project {
                         cx,
                     );
                 }
-                terminal_handle
-            });
 
-            terminal
+                if let Some(project_id) = self.remote_id() {
+                    self.client
+                        .send(UpdateTerminals {
+                            project_id,
+                            terminals: self
+                                .terminals
+                                .local_handles
+                                .iter()
+                                .map(|handle| handle.id() as TerminalId)
+                                .collect(),
+                        })
+                        .log_err();
+                }
+
+                terminal_handle
+            })
         }
     }
 

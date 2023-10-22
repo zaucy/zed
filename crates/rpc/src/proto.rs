@@ -362,7 +362,6 @@ request_messages!(
     (UpdateWorktree, Ack),
     (JoinChannelBuffer, JoinChannelBufferResponse),
     (LeaveChannelBuffer, Ack),
-    (UpdateTerminals, Ack),
     (OpenTerminal, OpenTerminalResponse),
 );
 
@@ -417,6 +416,8 @@ entity_messages!(
     UpdateWorktree,
     UpdateWorktreeSettings,
     UpdateDiffBase,
+    UpdateTerminals,
+    OpenTerminal,
 );
 
 entity_messages!(

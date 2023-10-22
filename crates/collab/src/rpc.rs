@@ -209,10 +209,8 @@ impl Server {
             .add_request_handler(update_project)
             .add_request_handler(update_worktree)
             .add_message_handler(start_language_server)
-            .add_message_handler(update_language_server)
             .add_message_handler(update_diagnostic_summary)
             .add_message_handler(update_worktree_settings)
-            .add_message_handler(refresh_inlay_hints)
             .add_request_handler(forward_project_request::<proto::GetHover>)
             .add_request_handler(forward_project_request::<proto::GetDefinition>)
             .add_request_handler(forward_project_request::<proto::GetTypeDefinition>)
@@ -240,11 +238,16 @@ impl Server {
             .add_request_handler(forward_project_request::<proto::ExpandProjectEntry>)
             .add_request_handler(forward_project_request::<proto::OnTypeFormatting>)
             .add_request_handler(forward_project_request::<proto::InlayHints>)
+            .add_request_handler(forward_project_request::<proto::OpenTerminal>)
+            .add_message_handler(forward_project_message::<proto::UpdateLanguageServer>)
+            .add_message_handler(forward_project_message::<proto::UpdateTerminals>)
+            .add_message_handler(forward_project_message::<proto::BufferReloaded>)
+            .add_message_handler(forward_project_message::<proto::BufferSaved>)
+            .add_message_handler(forward_project_message::<proto::RefreshInlayHints>)
+            .add_message_handler(forward_project_message::<proto::UpdateDiffBase>)
             .add_message_handler(create_buffer_for_peer)
             .add_request_handler(update_buffer)
             .add_message_handler(update_buffer_file)
-            .add_message_handler(buffer_reloaded)
-            .add_message_handler(buffer_saved)
             .add_request_handler(forward_project_request::<proto::SaveBuffer>)
             .add_request_handler(get_users)
             .add_request_handler(fuzzy_search_users)
@@ -276,12 +279,9 @@ impl Server {
             .add_request_handler(follow)
             .add_message_handler(unfollow)
             .add_message_handler(update_followers)
-            .add_message_handler(update_diff_base)
             .add_request_handler(get_private_user_info)
             .add_message_handler(acknowledge_channel_message)
             .add_message_handler(acknowledge_buffer_version);
-        // TODO kb
-        // .add_request_handler(share_terminal);
 
         Arc::new(server)
     }
@@ -1688,10 +1688,6 @@ async fn update_worktree_settings(
     Ok(())
 }
 
-async fn refresh_inlay_hints(request: proto::RefreshInlayHints, session: Session) -> Result<()> {
-    broadcast_project_message(request.project_id, request, session).await
-}
-
 async fn start_language_server(
     request: proto::StartLanguageServer,
     session: Session,
@@ -1705,29 +1701,6 @@ async fn start_language_server(
     broadcast(
         Some(session.connection_id),
         guest_connection_ids.iter().copied(),
-        |connection_id| {
-            session
-                .peer
-                .forward_send(session.connection_id, connection_id, request.clone())
-        },
-    );
-    Ok(())
-}
-
-async fn update_language_server(
-    request: proto::UpdateLanguageServer,
-    session: Session,
-) -> Result<()> {
-    session.executor.record_backtrace();
-    let project_id = ProjectId::from_proto(request.project_id);
-    let project_connection_ids = session
-        .db()
-        .await
-        .project_connection_ids(project_id, session.connection_id)
-        .await?;
-    broadcast(
-        Some(session.connection_id),
-        project_connection_ids.iter().copied(),
         |connection_id| {
             session
                 .peer
@@ -1766,6 +1739,29 @@ where
         .await?;
 
     response.send(payload)?;
+    Ok(())
+}
+
+async fn forward_project_message<T>(request: T, session: Session) -> Result<()>
+where
+    T: EntityMessage,
+{
+    session.executor.record_backtrace();
+    let project_id = ProjectId::from_proto(request.remote_entity_id());
+    let project_connection_ids = session
+        .db()
+        .await
+        .project_connection_ids(project_id, session.connection_id)
+        .await?;
+    broadcast(
+        Some(session.connection_id),
+        project_connection_ids.iter().copied(),
+        |connection_id| {
+            session
+                .peer
+                .forward_send(session.connection_id, connection_id, request.clone())
+        },
+    );
     Ok(())
 }
 
@@ -1836,52 +1832,6 @@ async fn update_buffer_file(request: proto::UpdateBufferFile, session: Session) 
         .project_connection_ids(project_id, session.connection_id)
         .await?;
 
-    broadcast(
-        Some(session.connection_id),
-        project_connection_ids.iter().copied(),
-        |connection_id| {
-            session
-                .peer
-                .forward_send(session.connection_id, connection_id, request.clone())
-        },
-    );
-    Ok(())
-}
-
-async fn buffer_reloaded(request: proto::BufferReloaded, session: Session) -> Result<()> {
-    let project_id = ProjectId::from_proto(request.project_id);
-    let project_connection_ids = session
-        .db()
-        .await
-        .project_connection_ids(project_id, session.connection_id)
-        .await?;
-    broadcast(
-        Some(session.connection_id),
-        project_connection_ids.iter().copied(),
-        |connection_id| {
-            session
-                .peer
-                .forward_send(session.connection_id, connection_id, request.clone())
-        },
-    );
-    Ok(())
-}
-
-async fn buffer_saved(request: proto::BufferSaved, session: Session) -> Result<()> {
-    broadcast_project_message(request.project_id, request, session).await
-}
-
-async fn broadcast_project_message<T: EnvelopedMessage>(
-    project_id: u64,
-    request: T,
-    session: Session,
-) -> Result<()> {
-    let project_id = ProjectId::from_proto(project_id);
-    let project_connection_ids = session
-        .db()
-        .await
-        .project_connection_ids(project_id, session.connection_id)
-        .await?;
     broadcast(
         Some(session.connection_id),
         project_connection_ids.iter().copied(),
@@ -3068,25 +3018,6 @@ async fn get_channel_messages(
         done: messages.len() < MESSAGE_COUNT_PER_PAGE,
         messages,
     })?;
-    Ok(())
-}
-
-async fn update_diff_base(request: proto::UpdateDiffBase, session: Session) -> Result<()> {
-    let project_id = ProjectId::from_proto(request.project_id);
-    let project_connection_ids = session
-        .db()
-        .await
-        .project_connection_ids(project_id, session.connection_id)
-        .await?;
-    broadcast(
-        Some(session.connection_id),
-        project_connection_ids.iter().copied(),
-        |connection_id| {
-            session
-                .peer
-                .forward_send(session.connection_id, connection_id, request.clone())
-        },
-    );
     Ok(())
 }
 

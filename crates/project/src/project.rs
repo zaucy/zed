@@ -614,6 +614,8 @@ impl Project {
         client.add_model_request_handler(Self::handle_open_buffer_by_path);
         client.add_model_request_handler(Self::handle_save_buffer);
         client.add_model_message_handler(Self::handle_update_diff_base);
+
+        Self::init_terminals(client, cx);
     }
 
     pub fn local(
@@ -668,9 +670,7 @@ impl Project {
                 buffers_needing_diff: Default::default(),
                 git_diff_debouncer: DelayedDebounced::new(),
                 nonce: StdRng::from_entropy().gen(),
-                terminals: Terminals {
-                    local_handles: Vec::new(),
-                },
+                terminals: Terminals::default(),
                 copilot_lsp_subscription,
                 copilot_log_subscription: None,
                 current_lsp_settings: settings::get::<ProjectSettings>(cx).lsp.clone(),
@@ -767,9 +767,7 @@ impl Project {
                 git_diff_debouncer: DelayedDebounced::new(),
                 buffer_snapshots: Default::default(),
                 nonce: StdRng::from_entropy().gen(),
-                terminals: Terminals {
-                    local_handles: Vec::new(),
-                },
+                terminals: Terminals::default(),
                 copilot_lsp_subscription,
                 copilot_log_subscription: None,
                 current_lsp_settings: settings::get::<ProjectSettings>(cx).lsp.clone(),

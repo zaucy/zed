@@ -20,9 +20,9 @@ use alacritty_terminal::{
     tty::{self, setup_env},
     Term,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 
-use client::{proto, Client};
+use client::Client;
 use event_loop::{EventLoop, Msg, Notifier};
 use futures::{
     channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender},

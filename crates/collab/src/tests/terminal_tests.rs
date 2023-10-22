@@ -44,13 +44,20 @@ async fn test_terminal_sharing(
 
     // Assert that B sees the terminal that A created in it's active call
     deterministic.run_until_parked();
-    let shared_terminals_b = cx_b.read(|cx| active_call_b.read(cx).shared_terminals());
+    let shared_terminals_b = cx_b.read(|cx| project_b.read(cx).shared_terminals().to_vec());
     assert_eq!(shared_terminals_b.len(), 1);
 
     // Open the terminal in B
     let terminal_b = project_b
         .update(cx_b, |project, cx| {
-            project.open_remote_terminal(shared_terminals_b[0], window_b.deref().clone(), cx)
+            project.open_remote_terminal(
+                project
+                    .remote_id()
+                    .expect("collab test project should have a remote id"),
+                shared_terminals_b[0],
+                window_b.deref().clone(),
+                cx,
+            )
         })
         .unwrap();
 
