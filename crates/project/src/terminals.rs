@@ -214,7 +214,7 @@ impl Project {
         }
     }
 
-    pub fn local_terminal_handles(&self) -> &Vec<WeakModelHandle<terminal::Terminal>> {
+    pub fn local_terminal_handles(&self) -> &[WeakModelHandle<Terminal>] {
         &self.terminals.local_handles
     }
 }
