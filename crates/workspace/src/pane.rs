@@ -958,9 +958,7 @@ impl Pane {
                 let (item_ix, mut project_item_ids) = pane.update(&mut cx, |pane, cx| {
                     (pane.index_for_item(&*item), item.project_item_model_ids(cx))
                 })?;
-                let item_ix = if let Some(ix) = item_ix {
-                    ix
-                } else {
+                let Some(item_ix) = item_ix else {
                     continue;
                 };
 
