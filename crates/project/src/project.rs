@@ -94,9 +94,10 @@ pub use worktree::*;
 
 const MAX_SERVER_REINSTALL_ATTEMPT_COUNT: u64 = 4;
 
-pub trait Item {
+pub trait ProjectItem {
     fn entry_id(&self, cx: &AppContext) -> Option<ProjectEntryId>;
     fn project_path(&self, cx: &AppContext) -> Option<ProjectPath>;
+    fn is_dirty(&self) -> bool;
 }
 
 // Language server state is stored across 3 collections:
@@ -8752,7 +8753,7 @@ fn resolve_path(base: &Path, path: &Path) -> PathBuf {
     result
 }
 
-impl Item for Buffer {
+impl ProjectItem for Buffer {
     fn entry_id(&self, cx: &AppContext) -> Option<ProjectEntryId> {
         File::from_dyn(self.file()).and_then(|file| file.project_entry_id(cx))
     }
@@ -8762,6 +8763,10 @@ impl Item for Buffer {
             worktree_id: file.worktree_id(cx),
             path: file.path().clone(),
         })
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.is_dirty()
     }
 }
 
