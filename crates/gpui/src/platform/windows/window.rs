@@ -18,24 +18,38 @@ use windows::{
     core::{w, HSTRING, PCWSTR},
     Win32::{
         Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
-        UI::WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, GetWindowLongPtrW, LoadCursorW, PostQuitMessage,
-            RegisterClassW, SetWindowLongPtrW, SetWindowTextW, ShowWindow, CREATESTRUCTW,
-            CW_USEDEFAULT, GWLP_USERDATA, HMENU, IDC_ARROW, SW_MAXIMIZE, SW_SHOW, WINDOW_EX_STYLE,
-            WINDOW_LONG_PTR_INDEX, WM_CLOSE, WM_DESTROY, WM_MOVE, WM_NCCREATE, WM_NCDESTROY,
-            WM_PAINT, WM_SIZE, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        System::SystemServices::{
+            MK_LBUTTON, MK_MBUTTON, MK_RBUTTON, MK_XBUTTON1, MK_XBUTTON2, MODIFIERKEYS_FLAGS,
+        },
+        UI::{
+            Input::KeyboardAndMouse::{
+                GetKeyState, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DOWN, VK_END, VK_HOME, VK_LEFT,
+                VK_LWIN, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_RWIN, VK_SHIFT,
+                VK_SPACE, VK_TAB, VK_UP,
+            },
+            WindowsAndMessaging::{
+                CreateWindowExW, DefWindowProcW, GetWindowLongPtrW, LoadCursorW, PostQuitMessage,
+                RegisterClassW, SetWindowLongPtrW, SetWindowTextW, ShowWindow, CREATESTRUCTW,
+                CW_USEDEFAULT, GWLP_USERDATA, HMENU, IDC_ARROW, SW_MAXIMIZE, SW_SHOW,
+                WINDOW_EX_STYLE, WINDOW_LONG_PTR_INDEX, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_KEYDOWN,
+                WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
+                WM_MOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP,
+                WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
+                WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE, XBUTTON1, XBUTTON2,
+            },
         },
     },
 };
 
 use crate::{
-    platform::blade::BladeRenderer, AnyWindowHandle, Bounds, GlobalPixels, HiLoWord, Modifiers,
-    Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow,
-    Point, PromptLevel, Scene, Size, WindowAppearance, WindowBounds, WindowOptions, WindowsDisplay,
-    WindowsPlatformInner,
+    platform::blade::BladeRenderer, AnyWindowHandle, Bounds, GlobalPixels, HiLoWord, KeyDownEvent,
+    KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    NavigationDirection, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
+    PlatformInputHandler, PlatformWindow, Point, PromptLevel, Scene, Size, WindowAppearance,
+    WindowBounds, WindowOptions, WindowsDisplay, WindowsPlatformInner,
 };
 
-struct WindowsWindowInner {
+pub(crate) struct WindowsWindowInner {
     hwnd: HWND,
     origin: Cell<Point<GlobalPixels>>,
     size: Cell<Size<GlobalPixels>>,
@@ -109,6 +123,20 @@ impl WindowsWindowInner {
         }
     }
 
+    fn is_virtual_key_pressed(&self, vkey: VIRTUAL_KEY) -> bool {
+        unsafe { ((GetKeyState(vkey.0 as i32) >> 8) & 0xFF) == 1 }
+    }
+
+    fn current_modifiers(&self) -> Modifiers {
+        Modifiers {
+            control: self.is_virtual_key_pressed(VK_CONTROL),
+            alt: self.is_virtual_key_pressed(VK_MENU),
+            shift: self.is_virtual_key_pressed(VK_SHIFT),
+            command: self.is_virtual_key_pressed(VK_LWIN) || self.is_virtual_key_pressed(VK_RWIN),
+            function: false,
+        }
+    }
+
     fn handle_msg(&self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         log::debug!("msg: {msg}, wparam: {}, lparam: {}", wparam.0, lparam.0);
         match msg {
@@ -175,9 +203,233 @@ impl WindowsWindowInner {
                 }
                 return LRESULT(1);
             }
+            WM_MOUSEMOVE => {
+                let x = Pixels::from(lparam.loword() as f32);
+                let y = Pixels::from(lparam.hiword() as f32);
+                self.mouse_position.set(Point { x, y });
+                let mut callbacks: std::cell::RefMut<'_, Callbacks> = self.callbacks.borrow_mut();
+                if let Some(callback) = callbacks.input.as_mut() {
+                    let pressed_button = match MODIFIERKEYS_FLAGS(wparam.loword() as u32) {
+                        flags if flags.contains(MK_LBUTTON) => Some(MouseButton::Left),
+                        flags if flags.contains(MK_RBUTTON) => Some(MouseButton::Right),
+                        flags if flags.contains(MK_MBUTTON) => Some(MouseButton::Middle),
+                        flags if flags.contains(MK_XBUTTON1) => {
+                            Some(MouseButton::Navigate(NavigationDirection::Back))
+                        }
+                        flags if flags.contains(MK_XBUTTON2) => {
+                            Some(MouseButton::Navigate(NavigationDirection::Forward))
+                        }
+                        _ => None,
+                    };
+                    let event = MouseMoveEvent {
+                        position: Point { x, y },
+                        pressed_button,
+                        modifiers: self.current_modifiers(),
+                    };
+                    if callback(PlatformInput::MouseMove(event)) {
+                        return LRESULT(0);
+                    }
+                }
+                return LRESULT(1);
+            }
+            WM_LBUTTONDOWN => {
+                return self.handle_mouse_down_msg(MouseButton::Left, lparam);
+            }
+            WM_RBUTTONDOWN => {
+                return self.handle_mouse_down_msg(MouseButton::Right, lparam);
+            }
+            WM_MBUTTONDOWN => {
+                return self.handle_mouse_down_msg(MouseButton::Middle, lparam);
+            }
+            WM_XBUTTONDOWN => {
+                let nav_dir = match wparam.hiword() {
+                    XBUTTON1 => Some(NavigationDirection::Forward),
+                    XBUTTON2 => Some(NavigationDirection::Back),
+                    _ => None,
+                };
+
+                if let Some(nav_dir) = nav_dir {
+                    return self.handle_mouse_down_msg(MouseButton::Navigate(nav_dir), lparam);
+                }
+                return LRESULT(1);
+            }
+            WM_LBUTTONUP => {
+                return self.handle_mouse_up_msg(MouseButton::Left, lparam);
+            }
+            WM_RBUTTONUP => {
+                return self.handle_mouse_up_msg(MouseButton::Right, lparam);
+            }
+            WM_MBUTTONUP => {
+                return self.handle_mouse_up_msg(MouseButton::Middle, lparam);
+            }
+            WM_XBUTTONUP => {
+                let nav_dir = match wparam.hiword() {
+                    XBUTTON1 => Some(NavigationDirection::Forward),
+                    XBUTTON2 => Some(NavigationDirection::Back),
+                    _ => None,
+                };
+
+                if let Some(nav_dir) = nav_dir {
+                    return self.handle_mouse_up_msg(MouseButton::Navigate(nav_dir), lparam);
+                }
+                return LRESULT(1);
+            }
+            WM_KEYDOWN | WM_SYSKEYDOWN => {
+                return self.handle_keydown_msg(wparam);
+            }
+            WM_KEYUP | WM_SYSKEYUP => {
+                return self.handle_keyup_msg(wparam);
+            }
+            WM_CHAR | WM_SYSCHAR => {
+                return self.handle_char_msg(wparam);
+            }
             _ => return unsafe { DefWindowProcW(self.hwnd, msg, wparam, lparam) },
         }
         LRESULT(0)
+    }
+
+    fn handle_keydown_msg(&self, wparam: WPARAM) -> LRESULT {
+        let mut callbacks: std::cell::RefMut<'_, Callbacks> = self.callbacks.borrow_mut();
+        if let Some(callback) = callbacks.input.as_mut() {
+            let key = virtual_key_to_key_string(wparam);
+            if let Some(key) = key {
+                let keystroke = Keystroke {
+                    modifiers: self.current_modifiers(),
+                    key,
+                    ime_key: None,
+                };
+                let event = KeyDownEvent {
+                    keystroke,
+                    is_held: true,
+                };
+
+                if callback(PlatformInput::KeyDown(event)) {
+                    return LRESULT(0);
+                }
+            }
+        }
+        return LRESULT(1);
+    }
+
+    fn handle_keyup_msg(&self, wparam: WPARAM) -> LRESULT {
+        let mut callbacks: std::cell::RefMut<'_, Callbacks> = self.callbacks.borrow_mut();
+        if let Some(callback) = callbacks.input.as_mut() {
+            let key = virtual_key_to_key_string(wparam);
+            if let Some(key) = key {
+                let keystroke = Keystroke {
+                    modifiers: self.current_modifiers(),
+                    key,
+                    ime_key: None,
+                };
+                let event = KeyUpEvent { keystroke };
+
+                if callback(PlatformInput::KeyUp(event)) {
+                    return LRESULT(0);
+                }
+            }
+        }
+        return LRESULT(1);
+    }
+
+    fn handle_char_msg(&self, wparam: WPARAM) -> LRESULT {
+        let mut callbacks: std::cell::RefMut<'_, Callbacks> = self.callbacks.borrow_mut();
+        if let Some(callback) = callbacks.input.as_mut() {
+            let msg_char = wparam.0 as u8 as char;
+            dbg!(&msg_char);
+            let key = match msg_char {
+                ' ' => "space".to_string(),
+                c => c.to_string(),
+            };
+            let keystroke = Keystroke {
+                modifiers: self.current_modifiers(),
+                key,
+                ime_key: Some(msg_char.to_string()),
+            };
+            let event = KeyDownEvent {
+                keystroke,
+                is_held: false,
+            };
+
+            if callback(PlatformInput::KeyDown(event.clone())) {
+                return LRESULT(0);
+            }
+
+            if let Some(mut input_handler) = self.input_handler.take() {
+                if let Some(ime_key) = &event.keystroke.ime_key {
+                    input_handler.replace_text_in_range(None, ime_key);
+                }
+                self.input_handler.set(Some(input_handler));
+                return LRESULT(0);
+            }
+        }
+        return LRESULT(1);
+    }
+
+    fn handle_mouse_down_msg(&self, button: MouseButton, lparam: LPARAM) -> LRESULT {
+        let mut callbacks: std::cell::RefMut<'_, Callbacks> = self.callbacks.borrow_mut();
+        if let Some(callback) = callbacks.input.as_mut() {
+            let x = Pixels::from(lparam.loword() as f32);
+            let y = Pixels::from(lparam.hiword() as f32);
+            let event = MouseDownEvent {
+                button,
+                position: Point { x, y },
+                modifiers: self.current_modifiers(),
+                click_count: 1,
+            };
+            if callback(PlatformInput::MouseDown(event)) {
+                return LRESULT(0);
+            }
+        }
+        LRESULT(1)
+    }
+
+    fn handle_mouse_up_msg(&self, button: MouseButton, lparam: LPARAM) -> LRESULT {
+        let mut callbacks: std::cell::RefMut<'_, Callbacks> = self.callbacks.borrow_mut();
+        if let Some(callback) = callbacks.input.as_mut() {
+            let x = Pixels::from(lparam.loword() as f32);
+            let y = Pixels::from(lparam.hiword() as f32);
+            let event = MouseUpEvent {
+                button,
+                position: Point { x, y },
+                modifiers: self.current_modifiers(),
+                click_count: 1,
+            };
+            if callback(PlatformInput::MouseUp(event)) {
+                return LRESULT(0);
+            }
+        }
+        LRESULT(1)
+    }
+}
+
+fn virtual_key_to_key_string(wparam: WPARAM) -> Option<String> {
+    let key = match VIRTUAL_KEY(wparam.loword()) {
+        VK_SPACE => Some("space".to_string()),
+        VK_TAB => Some("tab".to_string()),
+        VK_BACK => Some("backspace".to_string()),
+        VK_RETURN => Some("enter".to_string()),
+        VK_UP => Some("up".to_string()),
+        VK_DOWN => Some("down".to_string()),
+        VK_RIGHT => Some("right".to_string()),
+        VK_LEFT => Some("left".to_string()),
+        VK_HOME => Some("home".to_string()),
+        VK_END => Some("end".to_string()),
+        VK_PRIOR => Some("pageup".to_string()),
+        VK_NEXT => Some("pagedown".to_string()),
+        _ => None,
+    };
+    key
+}
+
+fn parse_mouse_event_button(wparam: WPARAM) -> MouseButton {
+    dbg!(&wparam);
+    match MODIFIERKEYS_FLAGS(wparam.0 as u32) {
+        flags if flags.contains(MK_LBUTTON) => MouseButton::Left,
+        flags if flags.contains(MK_RBUTTON) => MouseButton::Right,
+        flags if flags.contains(MK_MBUTTON) => MouseButton::Middle,
+        flags if flags.contains(MK_XBUTTON1) => MouseButton::Navigate(NavigationDirection::Back),
+        flags if flags.contains(MK_XBUTTON2) => MouseButton::Navigate(NavigationDirection::Forward),
+        _ => panic!("Unexpected mouse wparam"),
     }
 }
 

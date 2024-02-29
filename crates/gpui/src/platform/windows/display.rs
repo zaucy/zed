@@ -20,7 +20,7 @@ impl PlatformDisplay for WindowsDisplay {
 
     // todo!("windows")
     fn uuid(&self) -> Result<Uuid> {
-        Err(anyhow!("not implemented yet."))
+        Ok(Uuid::from_bytes([0; 16]))
     }
 
     // todo!("windows")

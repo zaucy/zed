@@ -289,16 +289,18 @@ impl Platform for WindowsPlatform {
 
     // todo!("windows")
     fn write_credentials(&self, url: &str, username: &str, password: &[u8]) -> Task<Result<()>> {
-        Task::Ready(Some(Err(anyhow!("not implemented yet."))))
+        Task::Ready(Some(Err(anyhow!("write_credentials not implemented yet."))))
     }
 
     // todo!("windows")
     fn read_credentials(&self, url: &str) -> Task<Result<Option<(String, Vec<u8>)>>> {
-        Task::Ready(Some(Err(anyhow!("not implemented yet."))))
+        Task::Ready(Some(Err(anyhow!("read_credentials not implemented yet."))))
     }
 
     // todo!("windows")
     fn delete_credentials(&self, url: &str) -> Task<Result<()>> {
-        Task::Ready(Some(Err(anyhow!("not implemented yet."))))
+        Task::Ready(Some(Err(anyhow!(
+            "delete_credentials not implemented yet."
+        ))))
     }
 }
