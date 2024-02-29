@@ -17,9 +17,11 @@ use parking_lot::Mutex;
 use time::UtcOffset;
 use util::SemanticVersion;
 use windows::Win32::{
-    Foundation::HWND,
+    Foundation::{CloseHandle, HANDLE, HWND},
+    System::Threading::{CreateEventW, ResetEvent, INFINITE},
     UI::WindowsAndMessaging::{
-        DispatchMessageW, PeekMessageW, PostQuitMessage, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
+        DispatchMessageW, MsgWaitForMultipleObjects, PeekMessageW, PostQuitMessage,
+        TranslateMessage, MSG, PM_REMOVE, QS_ALLINPUT, WM_QUIT,
     },
 };
 
@@ -41,6 +43,13 @@ pub(crate) struct WindowsPlatformInner {
     text_system: Arc<WindowsTextSystem>,
     callbacks: Mutex<Callbacks>,
     pub(crate) window_handles: RefCell<HashSet<AnyWindowHandle>>,
+    pub(crate) event: HANDLE,
+}
+
+impl Drop for WindowsPlatformInner {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.event) }.ok();
+    }
 }
 
 #[derive(Default)]
@@ -59,7 +68,8 @@ struct Callbacks {
 impl WindowsPlatform {
     pub(crate) fn new() -> Self {
         let (main_sender, main_receiver) = flume::unbounded::<Runnable>();
-        let dispatcher = Arc::new(WindowsDispatcher::new(main_sender));
+        let event = unsafe { CreateEventW(None, true, false, None) }.unwrap();
+        let dispatcher = Arc::new(WindowsDispatcher::new(main_sender, event));
         let background_executor = BackgroundExecutor::new(dispatcher.clone());
         let foreground_executor = ForegroundExecutor::new(dispatcher);
         let text_system = Arc::new(WindowsTextSystem::new());
@@ -72,6 +82,7 @@ impl WindowsPlatform {
             text_system,
             callbacks,
             window_handles,
+            event,
         });
         Self { inner }
     }
@@ -92,19 +103,22 @@ impl Platform for WindowsPlatform {
 
     fn run(&self, on_finish_launching: Box<dyn 'static + FnOnce()>) {
         on_finish_launching();
-        loop {
+        'a: loop {
+            unsafe {
+                MsgWaitForMultipleObjects(Some(&[self.inner.event]), false, INFINITE, QS_ALLINPUT)
+            };
             let mut msg = MSG::default();
-            if unsafe { PeekMessageW(&mut msg, HWND::default(), 0, 0, PM_REMOVE) }.as_bool() {
+            while unsafe { PeekMessageW(&mut msg, HWND::default(), 0, 0, PM_REMOVE) }.as_bool() {
                 if msg.message == WM_QUIT {
-                    break;
+                    break 'a;
                 }
                 unsafe { TranslateMessage(&msg) };
                 unsafe { DispatchMessageW(&msg) };
-            } else if let Ok(runnable) = self.inner.main_receiver.try_recv() {
-                runnable.run();
-            } else {
-                std::thread::yield_now();
             }
+            while let Ok(runnable) = self.inner.main_receiver.try_recv() {
+                runnable.run();
+            }
+            unsafe { ResetEvent(self.inner.event) }.unwrap();
         }
         let mut callbacks = self.inner.callbacks.lock();
         if let Some(callback) = callbacks.quit.as_mut() {
@@ -176,7 +190,7 @@ impl Platform for WindowsPlatform {
 
     // todo!("windows")
     fn on_open_urls(&self, callback: Box<dyn FnMut(Vec<String>)>) {
-        self.inner.callbacks.lock().open_urls = callback.into();
+        self.inner.callbacks.lock().open_urls = Some(callback);
     }
 
     // todo!("windows")
@@ -195,38 +209,38 @@ impl Platform for WindowsPlatform {
     }
 
     fn on_become_active(&self, callback: Box<dyn FnMut()>) {
-        self.inner.callbacks.lock().become_active = callback.into();
+        self.inner.callbacks.lock().become_active = Some(callback);
     }
 
     fn on_resign_active(&self, callback: Box<dyn FnMut()>) {
-        self.inner.callbacks.lock().resign_active = callback.into();
+        self.inner.callbacks.lock().resign_active = Some(callback);
     }
 
     fn on_quit(&self, callback: Box<dyn FnMut()>) {
-        self.inner.callbacks.lock().quit = callback.into();
+        self.inner.callbacks.lock().quit = Some(callback);
     }
 
     fn on_reopen(&self, callback: Box<dyn FnMut()>) {
-        self.inner.callbacks.lock().reopen = callback.into();
+        self.inner.callbacks.lock().reopen = Some(callback);
     }
 
     fn on_event(&self, callback: Box<dyn FnMut(PlatformInput) -> bool>) {
-        self.inner.callbacks.lock().event = callback.into();
+        self.inner.callbacks.lock().event = Some(callback);
     }
 
     // todo!("windows")
     fn set_menus(&self, menus: Vec<Menu>, keymap: &Keymap) {}
 
     fn on_app_menu_action(&self, callback: Box<dyn FnMut(&dyn Action)>) {
-        self.inner.callbacks.lock().app_menu_action = callback.into();
+        self.inner.callbacks.lock().app_menu_action = Some(callback);
     }
 
     fn on_will_open_app_menu(&self, callback: Box<dyn FnMut()>) {
-        self.inner.callbacks.lock().will_open_app_menu = callback.into();
+        self.inner.callbacks.lock().will_open_app_menu = Some(callback);
     }
 
     fn on_validate_app_menu_command(&self, callback: Box<dyn FnMut(&dyn Action) -> bool>) {
-        self.inner.callbacks.lock().validate_app_menu_command = callback.into();
+        self.inner.callbacks.lock().validate_app_menu_command = Some(callback);
     }
 
     fn os_name(&self) -> &'static str {
