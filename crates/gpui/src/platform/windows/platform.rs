@@ -12,13 +12,17 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use async_task::Runnable;
+use clipboard_win::{get_clipboard_string, set_clipboard_string};
 use futures::channel::oneshot::Receiver;
 use parking_lot::Mutex;
 use time::UtcOffset;
 use util::SemanticVersion;
 use windows::Win32::{
     Foundation::{CloseHandle, HANDLE, HWND, LRESULT},
-    System::Threading::{CreateEventW, ResetEvent, INFINITE},
+    System::{
+        DataExchange::SetClipboardData,
+        Threading::{CreateEventW, ResetEvent, INFINITE},
+    },
     UI::WindowsAndMessaging::{
         DefWindowProcW, DispatchMessageW, GetWindowLongPtrW, GetWindowLongW,
         MsgWaitForMultipleObjects, PeekMessageW, PostQuitMessage, TranslateMessage, GWLP_USERDATA,
@@ -329,12 +333,16 @@ impl Platform for WindowsPlatform {
 
     // todo!("windows")
     fn write_to_clipboard(&self, item: ClipboardItem) {
-        unimplemented!()
+        if let Err(err) = set_clipboard_string(item.text().as_str()) {
+            log::error!("Clipboard: {}", err.to_string());
+        }
     }
 
     // todo!("windows")
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
-        unimplemented!()
+        get_clipboard_string()
+            .ok()
+            .map(|content| ClipboardItem::new(content))
     }
 
     // todo!("windows")
