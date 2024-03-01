@@ -112,6 +112,29 @@ impl WindowsPlatform {
             false
         }
     }
+
+    fn message_loop(&self) {
+        'a: loop {
+            unsafe {
+                MsgWaitForMultipleObjects(Some(&[self.inner.event]), false, INFINITE, QS_ALLINPUT)
+            };
+            let mut msg = MSG::default();
+            if unsafe { PeekMessageW(&mut msg, HWND::default(), 0, 0, PM_REMOVE) }.as_bool() {
+                if msg.message == WM_QUIT {
+                    break 'a;
+                }
+
+                if !self.run_immediate_msg_handlers(&mut msg) {
+                    unsafe { TranslateMessage(&msg) };
+                    unsafe { DispatchMessageW(&msg) };
+                }
+            }
+            for runnable in self.inner.main_receiver.drain() {
+                runnable.run();
+            }
+            unsafe { ResetEvent(self.inner.event) }.unwrap();
+        }
+    }
 }
 
 pub(crate) unsafe fn get_window_long(hwnd: HWND, nindex: WINDOW_LONG_PTR_INDEX) -> isize {
@@ -140,26 +163,7 @@ impl Platform for WindowsPlatform {
 
     fn run(&self, on_finish_launching: Box<dyn 'static + FnOnce()>) {
         on_finish_launching();
-        'a: loop {
-            unsafe {
-                MsgWaitForMultipleObjects(Some(&[self.inner.event]), false, INFINITE, QS_ALLINPUT)
-            };
-            let mut msg = MSG::default();
-            while unsafe { PeekMessageW(&mut msg, HWND::default(), 0, 0, PM_REMOVE) }.as_bool() {
-                if msg.message == WM_QUIT {
-                    break 'a;
-                }
-
-                if !self.run_immediate_msg_handlers(&mut msg) {
-                    unsafe { TranslateMessage(&msg) };
-                    unsafe { DispatchMessageW(&msg) };
-                }
-            }
-            while let Ok(runnable) = self.inner.main_receiver.try_recv() {
-                runnable.run();
-            }
-            unsafe { ResetEvent(self.inner.event) }.unwrap();
-        }
+        self.message_loop();
         let mut callbacks = self.inner.callbacks.lock();
         if let Some(callback) = callbacks.quit.as_mut() {
             callback()
