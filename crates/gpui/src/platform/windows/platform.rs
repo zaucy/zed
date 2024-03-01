@@ -5,7 +5,7 @@ use std::{
     cell::RefCell,
     collections::HashSet,
     path::{Path, PathBuf},
-    rc::Rc,
+    rc::{Rc, Weak},
     sync::Arc,
     time::Duration,
 };
@@ -17,19 +17,21 @@ use parking_lot::Mutex;
 use time::UtcOffset;
 use util::SemanticVersion;
 use windows::Win32::{
-    Foundation::{CloseHandle, HANDLE, HWND},
+    Foundation::{CloseHandle, HANDLE, HWND, LRESULT},
     System::Threading::{CreateEventW, ResetEvent, INFINITE},
     UI::WindowsAndMessaging::{
-        DispatchMessageW, MsgWaitForMultipleObjects, PeekMessageW, PostQuitMessage,
-        TranslateMessage, MSG, PM_REMOVE, QS_ALLINPUT, WM_QUIT,
+        DefWindowProcW, DispatchMessageW, GetWindowLongPtrW, GetWindowLongW,
+        MsgWaitForMultipleObjects, PeekMessageW, PostQuitMessage, TranslateMessage, GWLP_USERDATA,
+        MSG, PM_REMOVE, QS_ALLINPUT, WINDOW_LONG_PTR_INDEX, WM_KEYDOWN, WM_KEYUP, WM_QUIT,
+        WM_SYSKEYDOWN, WM_SYSKEYUP,
     },
 };
 
 use crate::{
-    Action, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor,
-    Keymap, Menu, PathPromptOptions, Platform, PlatformDisplay, PlatformInput, PlatformTextSystem,
-    PlatformWindow, Task, WindowAppearance, WindowOptions, WindowsDispatcher, WindowsDisplay,
-    WindowsTextSystem, WindowsWindow,
+    Action, AnyWindowHandle, BackgroundExecutor, CallbackResult, ClipboardItem, CursorStyle,
+    ForegroundExecutor, Keymap, Menu, PathPromptOptions, Platform, PlatformDisplay, PlatformInput,
+    PlatformTextSystem, PlatformWindow, Task, WindowAppearance, WindowOptions, WindowsDispatcher,
+    WindowsDisplay, WindowsTextSystem, WindowsWindow, WindowsWindowInner,
 };
 
 pub(crate) struct WindowsPlatform {
@@ -86,6 +88,37 @@ impl WindowsPlatform {
         });
         Self { inner }
     }
+
+    /// returns true if message is handled and should not dispatch
+    fn run_immediate_msg_handlers(&self, msg: &mut MSG) -> bool {
+        let ptr =
+            unsafe { get_window_long(msg.hwnd, GWLP_USERDATA) } as *mut Weak<WindowsWindowInner>;
+        if ptr.is_null() {
+            return false;
+        }
+
+        let inner = unsafe { &*ptr };
+        if let Some(inner) = inner.upgrade() {
+            match msg.message {
+                WM_KEYDOWN | WM_SYSKEYDOWN => inner.handle_keydown_msg(msg.wParam).is_handled(),
+                WM_KEYUP | WM_SYSKEYUP => inner.handle_keyup_msg(msg.wParam).is_handled(),
+                _ => false,
+            }
+        } else {
+            false
+        }
+    }
+}
+
+pub(crate) unsafe fn get_window_long(hwnd: HWND, nindex: WINDOW_LONG_PTR_INDEX) -> isize {
+    #[cfg(target_pointer_width = "64")]
+    unsafe {
+        GetWindowLongPtrW(hwnd, nindex)
+    }
+    #[cfg(target_pointer_width = "32")]
+    unsafe {
+        GetWindowLongW(hwnd, nindex) as isize
+    }
 }
 
 impl Platform for WindowsPlatform {
@@ -112,8 +145,11 @@ impl Platform for WindowsPlatform {
                 if msg.message == WM_QUIT {
                     break 'a;
                 }
-                unsafe { TranslateMessage(&msg) };
-                unsafe { DispatchMessageW(&msg) };
+
+                if !self.run_immediate_msg_handlers(&mut msg) {
+                    unsafe { TranslateMessage(&msg) };
+                    unsafe { DispatchMessageW(&msg) };
+                }
             }
             while let Ok(runnable) = self.inner.main_receiver.try_recv() {
                 runnable.run();

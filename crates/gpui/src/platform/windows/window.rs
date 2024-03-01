@@ -23,13 +23,13 @@ use windows::{
         },
         UI::{
             Input::KeyboardAndMouse::{
-                GetKeyState, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DOWN, VK_END, VK_HOME, VK_LEFT,
-                VK_LWIN, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_RWIN, VK_SHIFT,
-                VK_SPACE, VK_TAB, VK_UP,
+                GetKeyState, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_F1,
+                VK_F24, VK_HOME, VK_INSERT, VK_LEFT, VK_LWIN, VK_MENU, VK_NEXT, VK_PRIOR,
+                VK_RETURN, VK_RIGHT, VK_RWIN, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
             },
             WindowsAndMessaging::{
-                CreateWindowExW, DefWindowProcW, GetWindowLongPtrW, LoadCursorW, PostQuitMessage,
-                RegisterClassW, SetWindowLongPtrW, SetWindowTextW, ShowWindow, CREATESTRUCTW,
+                CreateWindowExW, DefWindowProcW, LoadCursorW, PostQuitMessage, RegisterClassW,
+                SetWindowLongPtrW, SetWindowLongW, SetWindowTextW, ShowWindow, CREATESTRUCTW,
                 CW_USEDEFAULT, GWLP_USERDATA, HMENU, IDC_ARROW, SW_MAXIMIZE, SW_SHOW,
                 WINDOW_EX_STYLE, WINDOW_LONG_PTR_INDEX, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_KEYDOWN,
                 WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
@@ -42,11 +42,11 @@ use windows::{
 };
 
 use crate::{
-    platform::blade::BladeRenderer, AnyWindowHandle, Bounds, GlobalPixels, HiLoWord, KeyDownEvent,
-    KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    NavigationDirection, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
-    PlatformInputHandler, PlatformWindow, Point, PromptLevel, Scene, Size, WindowAppearance,
-    WindowBounds, WindowOptions, WindowsDisplay, WindowsPlatformInner,
+    get_window_long, platform::blade::BladeRenderer, AnyWindowHandle, Bounds, GlobalPixels,
+    HiLoWord, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, NavigationDirection, Pixels, PlatformAtlas, PlatformDisplay,
+    PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptLevel, Scene, Size,
+    WindowAppearance, WindowBounds, WindowOptions, WindowsDisplay, WindowsPlatformInner,
 };
 
 pub(crate) struct WindowsWindowInner {
@@ -59,6 +59,22 @@ pub(crate) struct WindowsWindowInner {
     callbacks: RefCell<Callbacks>,
     platform_inner: Rc<WindowsPlatformInner>,
     handle: AnyWindowHandle,
+}
+
+#[derive(PartialEq)]
+pub(crate) enum CallbackResult {
+    Handled(bool),
+    Unhandled,
+}
+
+impl CallbackResult {
+    pub fn is_handled(&self) -> bool {
+        match self {
+            Self::Handled(true) => true,
+            Self::Handled(false) => true,
+            _ => false,
+        }
+    }
 }
 
 impl WindowsWindowInner {
@@ -124,7 +140,7 @@ impl WindowsWindowInner {
     }
 
     fn is_virtual_key_pressed(&self, vkey: VIRTUAL_KEY) -> bool {
-        unsafe { ((GetKeyState(vkey.0 as i32) >> 8) & 0xFF) == 1 }
+        unsafe { GetKeyState(vkey.0 as i32) < 0 }
     }
 
     fn current_modifiers(&self) -> Modifiers {
@@ -275,10 +291,10 @@ impl WindowsWindowInner {
                 return LRESULT(1);
             }
             WM_KEYDOWN | WM_SYSKEYDOWN => {
-                return self.handle_keydown_msg(wparam);
+                return LRESULT(0);
             }
             WM_KEYUP | WM_SYSKEYUP => {
-                return self.handle_keyup_msg(wparam);
+                return LRESULT(0);
             }
             WM_CHAR | WM_SYSCHAR => {
                 return self.handle_char_msg(wparam);
@@ -288,61 +304,133 @@ impl WindowsWindowInner {
         LRESULT(0)
     }
 
-    fn handle_keydown_msg(&self, wparam: WPARAM) -> LRESULT {
+    pub(crate) fn handle_keydown_msg(&self, wparam: WPARAM) -> CallbackResult {
         let mut callbacks: std::cell::RefMut<'_, Callbacks> = self.callbacks.borrow_mut();
-        if let Some(callback) = callbacks.input.as_mut() {
-            let key = virtual_key_to_key_string(wparam);
-            if let Some(key) = key {
-                let keystroke = Keystroke {
-                    modifiers: self.current_modifiers(),
-                    key,
-                    ime_key: None,
-                };
+        let keystroke = self.parse_key_msg_keystroke(wparam);
+        if let Some(keystroke) = keystroke {
+            if let Some(callback) = callbacks.input.as_mut() {
                 let event = KeyDownEvent {
                     keystroke,
                     is_held: true,
                 };
 
-                if callback(PlatformInput::KeyDown(event)) {
-                    return LRESULT(0);
+                if callback(PlatformInput::KeyDown(event.clone())) {
+                    CallbackResult::Handled(true)
+                } else if let Some(mut input_handler) = self.input_handler.take() {
+                    if let Some(ime_key) = &event.keystroke.ime_key {
+                        input_handler.replace_text_in_range(None, ime_key);
+                    }
+                    self.input_handler.set(Some(input_handler));
+                    CallbackResult::Handled(true)
+                } else {
+                    CallbackResult::Handled(false)
                 }
+            } else {
+                CallbackResult::Handled(false)
             }
+        } else {
+            CallbackResult::Unhandled
         }
-        return LRESULT(1);
     }
 
-    fn handle_keyup_msg(&self, wparam: WPARAM) -> LRESULT {
-        let mut callbacks: std::cell::RefMut<'_, Callbacks> = self.callbacks.borrow_mut();
-        if let Some(callback) = callbacks.input.as_mut() {
-            let key = virtual_key_to_key_string(wparam);
-            if let Some(key) = key {
-                let keystroke = Keystroke {
-                    modifiers: self.current_modifiers(),
-                    key,
-                    ime_key: None,
-                };
-                let event = KeyUpEvent { keystroke };
+    fn parse_key_msg_keystroke(&self, wparam: WPARAM) -> Option<Keystroke> {
+        let vk_code = wparam.loword();
 
-                if callback(PlatformInput::KeyUp(event)) {
-                    return LRESULT(0);
-                }
+        // 0-9 https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes
+        if vk_code >= 0x30 && vk_code <= 0x39 {
+            let modifiers = self.current_modifiers();
+
+            if modifiers.shift {
+                return None;
             }
+
+            let digit_char = ('0' as u8 + ((vk_code - 0x30) as u8)) as char;
+            return Some(Keystroke {
+                modifiers,
+                key: digit_char.to_string(),
+                ime_key: Some(digit_char.to_string()),
+            });
         }
-        return LRESULT(1);
+
+        // A-Z https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes
+        if vk_code >= 0x41 && vk_code <= 0x5A {
+            let offset = (vk_code - 0x41) as u8;
+            let alpha_char = ('a' as u8 + offset) as char;
+            let alpha_char_upper = ('A' as u8 + offset) as char;
+            let modifiers = self.current_modifiers();
+            return Some(Keystroke {
+                modifiers,
+                key: alpha_char.to_string(),
+                ime_key: Some(if modifiers.shift {
+                    alpha_char_upper.to_string()
+                } else {
+                    alpha_char.to_string()
+                }),
+            });
+        }
+
+        if vk_code >= VK_F1.0 && vk_code <= VK_F24.0 {
+            let offset = vk_code - VK_F1.0;
+            return Some(Keystroke {
+                modifiers: self.current_modifiers(),
+                key: format!("f{}", offset),
+                ime_key: None,
+            });
+        }
+
+        let key = match VIRTUAL_KEY(vk_code) {
+            VK_SPACE => Some(("space", Some(" "))),
+            VK_TAB => Some(("tab", Some("\t"))),
+            VK_BACK => Some(("backspace", None)),
+            VK_RETURN => Some(("enter", None)),
+            VK_UP => Some(("up", None)),
+            VK_DOWN => Some(("down", None)),
+            VK_RIGHT => Some(("right", None)),
+            VK_LEFT => Some(("left", None)),
+            VK_HOME => Some(("home", None)),
+            VK_END => Some(("end", None)),
+            VK_PRIOR => Some(("pageup", None)),
+            VK_NEXT => Some(("pagedown", None)),
+            VK_ESCAPE => Some(("escape", None)),
+            VK_INSERT => Some(("insert", None)),
+            _ => None,
+        };
+
+        if let Some((key, ime_key)) = key {
+            Some(Keystroke {
+                modifiers: self.current_modifiers(),
+                key: key.to_string(),
+                ime_key: ime_key.map(|k| k.to_string()),
+            })
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn handle_keyup_msg(&self, wparam: WPARAM) -> CallbackResult {
+        let mut callbacks: std::cell::RefMut<'_, Callbacks> = self.callbacks.borrow_mut();
+        let keystroke = self.parse_key_msg_keystroke(wparam);
+        if let Some(keystroke) = keystroke {
+            if let Some(callback) = callbacks.input.as_mut() {
+                let event = KeyUpEvent { keystroke };
+                CallbackResult::Handled(callback(PlatformInput::KeyUp(event)))
+            } else {
+                CallbackResult::Handled(false)
+            }
+        } else {
+            CallbackResult::Unhandled
+        }
     }
 
     fn handle_char_msg(&self, wparam: WPARAM) -> LRESULT {
         let mut callbacks: std::cell::RefMut<'_, Callbacks> = self.callbacks.borrow_mut();
         if let Some(callback) = callbacks.input.as_mut() {
+            let modifiers = self.current_modifiers();
             let msg_char = wparam.0 as u8 as char;
             dbg!(&msg_char);
-            let key = match msg_char {
-                ' ' => "space".to_string(),
-                c => c.to_string(),
-            };
             let keystroke = Keystroke {
-                modifiers: self.current_modifiers(),
-                key,
+                modifiers,
+                key: msg_char.to_string(),
                 ime_key: Some(msg_char.to_string()),
             };
             let event = KeyDownEvent {
@@ -400,25 +488,6 @@ impl WindowsWindowInner {
         }
         LRESULT(1)
     }
-}
-
-fn virtual_key_to_key_string(wparam: WPARAM) -> Option<String> {
-    let key = match VIRTUAL_KEY(wparam.loword()) {
-        VK_SPACE => Some("space".to_string()),
-        VK_TAB => Some("tab".to_string()),
-        VK_BACK => Some("backspace".to_string()),
-        VK_RETURN => Some("enter".to_string()),
-        VK_UP => Some("up".to_string()),
-        VK_DOWN => Some("down".to_string()),
-        VK_RIGHT => Some("right".to_string()),
-        VK_LEFT => Some("left".to_string()),
-        VK_HOME => Some("home".to_string()),
-        VK_END => Some("end".to_string()),
-        VK_PRIOR => Some("pageup".to_string()),
-        VK_NEXT => Some("pagedown".to_string()),
-        _ => None,
-    };
-    key
 }
 
 fn parse_mouse_event_button(wparam: WPARAM) -> MouseButton {
@@ -763,17 +832,6 @@ unsafe extern "system" fn wnd_proc(
         unsafe { std::mem::drop(Box::from_raw(ptr)) };
     }
     r
-}
-
-unsafe fn get_window_long(hwnd: HWND, nindex: WINDOW_LONG_PTR_INDEX) -> isize {
-    #[cfg(target_pointer_width = "64")]
-    unsafe {
-        GetWindowLongPtrW(hwnd, nindex)
-    }
-    #[cfg(target_pointer_width = "32")]
-    unsafe {
-        GetWindowLongW(hwnd, nindex) as isize
-    }
 }
 
 unsafe fn set_window_long(hwnd: HWND, nindex: WINDOW_LONG_PTR_INDEX, dwnewlong: isize) -> isize {
