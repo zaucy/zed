@@ -188,9 +188,10 @@ impl WindowsWindowInner {
             }
             WM_PAINT => {
                 let mut callbacks = self.callbacks.borrow_mut();
-                if let Some(callback) = callbacks.request_frame.as_mut() {
-                    callback()
+                if let Some(request_frame) = callbacks.request_frame.as_mut() {
+                    request_frame();
                 }
+                return LRESULT(0);
             }
             WM_CLOSE => {
                 let mut callbacks: std::cell::RefMut<'_, Callbacks> = self.callbacks.borrow_mut();
@@ -315,12 +316,18 @@ impl WindowsWindowInner {
                 };
 
                 if callback(PlatformInput::KeyDown(event.clone())) {
+                    if let Some(request_frame) = callbacks.request_frame.as_mut() {
+                        request_frame();
+                    }
                     CallbackResult::Handled(true)
                 } else if let Some(mut input_handler) = self.input_handler.take() {
                     if let Some(ime_key) = &event.keystroke.ime_key {
                         input_handler.replace_text_in_range(None, ime_key);
                     }
                     self.input_handler.set(Some(input_handler));
+                    if let Some(request_frame) = callbacks.request_frame.as_mut() {
+                        request_frame();
+                    }
                     CallbackResult::Handled(true)
                 } else {
                     CallbackResult::Handled(false)

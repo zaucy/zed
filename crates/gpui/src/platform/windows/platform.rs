@@ -118,26 +118,11 @@ impl WindowsPlatform {
         }
     }
 
-    fn wait_message(&self) {
+    fn try_get_message(&self) -> Option<MSG> {
         let mut msg = MSG::default();
-        unsafe { GetMessageW(&mut msg, HWND::default(), 0, 0) };
-        if !self.run_immediate_msg_handlers(&msg) {
-            unsafe { TranslateMessage(&msg) };
-            unsafe { DispatchMessageW(&msg) };
-        }
-    }
-
-    fn peek_message(&self) {
-        let mut msg = MSG::default();
-        if unsafe { PeekMessageW(&mut msg, HWND::default(), 0, 0, PM_REMOVE) }.as_bool() {
-            if msg.message == WM_QUIT {
-                return;
-            }
-
-            if !self.run_immediate_msg_handlers(&mut msg) {
-                unsafe { TranslateMessage(&msg) };
-                unsafe { DispatchMessageW(&msg) };
-            }
+        match unsafe { PeekMessageW(&mut msg, HWND::default(), 0, 0, PM_REMOVE) }.as_bool() {
+            true => Some(msg),
+            false => None,
         }
     }
 
@@ -152,7 +137,17 @@ impl WindowsPlatform {
                     runnable.run();
                 }
             } else if wait_index == WAIT_EVENT(WAIT_OBJECT_0.0 + 1) {
-                self.wait_message();
+                if let Some(msg) = self.try_get_message() {
+                    if msg.message == WM_QUIT {
+                        return;
+                    }
+
+                    if !self.run_immediate_msg_handlers(&msg) {
+                        unsafe { TranslateMessage(&msg) };
+                    }
+
+                    unsafe { DispatchMessageW(&msg) };
+                }
             } else if wait_index == WAIT_FAILED {
                 unsafe { GetLastError().log_err() };
             }
