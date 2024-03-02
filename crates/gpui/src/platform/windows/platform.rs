@@ -16,15 +16,17 @@ use clipboard_win::{get_clipboard_string, set_clipboard_string};
 use futures::channel::oneshot::Receiver;
 use parking_lot::Mutex;
 use time::UtcOffset;
-use util::SemanticVersion;
+use util::{ResultExt, SemanticVersion};
 use windows::Win32::{
-    Foundation::{CloseHandle, HANDLE, HWND, LRESULT},
+    Foundation::{
+        CloseHandle, GetLastError, HANDLE, HWND, LRESULT, WAIT_EVENT, WAIT_FAILED, WAIT_OBJECT_0,
+    },
     System::{
         DataExchange::SetClipboardData,
-        Threading::{CreateEventW, ResetEvent, INFINITE},
+        Threading::{CreateEventW, GetCurrentProcess, GetCurrentThread, ResetEvent, INFINITE},
     },
     UI::WindowsAndMessaging::{
-        DefWindowProcW, DispatchMessageW, GetWindowLongPtrW, GetWindowLongW,
+        DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowLongPtrW, GetWindowLongW,
         MsgWaitForMultipleObjects, PeekMessageW, PostQuitMessage, TranslateMessage, GWLP_USERDATA,
         MSG, PM_REMOVE, QS_ALLINPUT, WINDOW_LONG_PTR_INDEX, WM_KEYDOWN, WM_KEYUP, WM_QUIT,
         WM_SYSKEYDOWN, WM_SYSKEYUP,
@@ -94,7 +96,7 @@ impl WindowsPlatform {
     }
 
     /// returns true if message is handled and should not dispatch
-    fn run_immediate_msg_handlers(&self, msg: &mut MSG) -> bool {
+    fn run_immediate_msg_handlers(&self, msg: &MSG) -> bool {
         let ptr =
             unsafe { get_window_long(msg.hwnd, GWLP_USERDATA) } as *mut Weak<WindowsWindowInner>;
         if ptr.is_null() {
@@ -113,26 +115,45 @@ impl WindowsPlatform {
         }
     }
 
+    fn wait_message(&self) {
+        let mut msg = MSG::default();
+        unsafe { GetMessageW(&mut msg, HWND::default(), 0, 0) };
+        if !self.run_immediate_msg_handlers(&msg) {
+            unsafe { TranslateMessage(&msg) };
+            unsafe { DispatchMessageW(&msg) };
+        }
+    }
+
+    fn peek_message(&self) {
+        let mut msg = MSG::default();
+        if unsafe { PeekMessageW(&mut msg, HWND::default(), 0, 0, PM_REMOVE) }.as_bool() {
+            if msg.message == WM_QUIT {
+                return;
+            }
+
+            if !self.run_immediate_msg_handlers(&mut msg) {
+                unsafe { TranslateMessage(&msg) };
+                unsafe { DispatchMessageW(&msg) };
+            }
+        }
+    }
+
     fn message_loop(&self) {
-        'a: loop {
-            unsafe {
+        loop {
+            let wait_index = unsafe {
                 MsgWaitForMultipleObjects(Some(&[self.inner.event]), false, INFINITE, QS_ALLINPUT)
             };
-            let mut msg = MSG::default();
-            if unsafe { PeekMessageW(&mut msg, HWND::default(), 0, 0, PM_REMOVE) }.as_bool() {
-                if msg.message == WM_QUIT {
-                    break 'a;
-                }
 
-                if !self.run_immediate_msg_handlers(&mut msg) {
-                    unsafe { TranslateMessage(&msg) };
-                    unsafe { DispatchMessageW(&msg) };
+            if wait_index == WAIT_OBJECT_0 {
+                for runnable in self.inner.main_receiver.drain() {
+                    runnable.run();
                 }
+                unsafe { ResetEvent(self.inner.event) }.unwrap();
+            } else if wait_index == WAIT_EVENT(WAIT_OBJECT_0.0 + 1) {
+                self.wait_message();
+            } else if wait_index == WAIT_FAILED {
+                unsafe { GetLastError().log_err() };
             }
-            for runnable in self.inner.main_receiver.drain() {
-                runnable.run();
-            }
-            unsafe { ResetEvent(self.inner.event) }.unwrap();
         }
     }
 }
