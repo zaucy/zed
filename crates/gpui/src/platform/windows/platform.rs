@@ -76,7 +76,7 @@ struct Callbacks {
 impl WindowsPlatform {
     pub(crate) fn new() -> Self {
         let (main_sender, main_receiver) = flume::unbounded::<Runnable>();
-        let event = unsafe { CreateEventW(None, true, false, None) }.unwrap();
+        let event = unsafe { CreateEventW(None, false, false, None) }.unwrap();
         let dispatcher = Arc::new(WindowsDispatcher::new(main_sender, event));
         let background_executor = BackgroundExecutor::new(dispatcher.clone());
         let foreground_executor = ForegroundExecutor::new(dispatcher);
@@ -148,7 +148,6 @@ impl WindowsPlatform {
                 for runnable in self.inner.main_receiver.drain() {
                     runnable.run();
                 }
-                unsafe { ResetEvent(self.inner.event) }.unwrap();
             } else if wait_index == WAIT_EVENT(WAIT_OBJECT_0.0 + 1) {
                 self.wait_message();
             } else if wait_index == WAIT_FAILED {
