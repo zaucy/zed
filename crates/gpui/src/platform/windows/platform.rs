@@ -19,7 +19,8 @@ use time::UtcOffset;
 use util::{ResultExt, SemanticVersion};
 use windows::Win32::{
     Foundation::{
-        CloseHandle, GetLastError, HANDLE, HWND, LRESULT, WAIT_EVENT, WAIT_FAILED, WAIT_OBJECT_0,
+        CloseHandle, GetLastError, HANDLE, HINSTANCE, HWND, LRESULT, WAIT_EVENT, WAIT_FAILED,
+        WAIT_OBJECT_0,
     },
     System::{
         DataExchange::SetClipboardData,
@@ -29,9 +30,10 @@ use windows::Win32::{
         Input::KeyboardAndMouse::GetActiveWindow,
         WindowsAndMessaging::{
             DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowLongPtrW, GetWindowLongW,
-            MsgWaitForMultipleObjects, PeekMessageW, PostQuitMessage, TranslateMessage,
-            GWLP_USERDATA, MSG, PM_REMOVE, QS_ALLINPUT, WINDOW_LONG_PTR_INDEX, WM_KEYDOWN,
-            WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
+            LoadCursorW, MsgWaitForMultipleObjects, PeekMessageW, PostQuitMessage, SetCursor,
+            TranslateMessage, GWLP_USERDATA, IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_IBEAM, IDC_NO,
+            IDC_SIZENS, IDC_SIZEWE, IDC_UPARROW, MSG, PM_REMOVE, QS_ALLINPUT,
+            WINDOW_LONG_PTR_INDEX, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
         },
     },
 };
@@ -362,7 +364,36 @@ impl Platform for WindowsPlatform {
     }
 
     // todo!("windows")
-    fn set_cursor_style(&self, style: CursorStyle) {}
+    fn set_cursor_style(&self, style: CursorStyle) {
+        let win_cursor_name = match style {
+            CursorStyle::Arrow => IDC_ARROW,
+            CursorStyle::IBeam => IDC_IBEAM,
+            CursorStyle::Crosshair => IDC_CROSS,
+            CursorStyle::ClosedHand => IDC_ARROW,
+            CursorStyle::OpenHand => IDC_ARROW,
+            CursorStyle::PointingHand => IDC_HAND,
+            CursorStyle::ResizeLeft => IDC_SIZEWE,
+            CursorStyle::ResizeRight => IDC_SIZEWE,
+            CursorStyle::ResizeLeftRight => IDC_SIZEWE,
+            CursorStyle::ResizeUp => IDC_SIZENS,
+            CursorStyle::ResizeDown => IDC_SIZENS,
+            CursorStyle::ResizeUpDown => IDC_SIZENS,
+            CursorStyle::DisappearingItem => IDC_UPARROW,
+            CursorStyle::IBeamCursorForVerticalLayout => IDC_IBEAM,
+            CursorStyle::OperationNotAllowed => IDC_NO,
+            CursorStyle::DragLink => IDC_ARROW,
+            CursorStyle::DragCopy => IDC_ARROW,
+            CursorStyle::ContextualMenu => IDC_ARROW,
+        };
+
+        let cursor = unsafe { LoadCursorW(HINSTANCE::default(), win_cursor_name) }.log_err();
+
+        if let Some(cursor) = cursor {
+            unsafe { SetCursor(cursor) };
+        } else {
+            log::error!("Failed to set cursor");
+        }
+    }
 
     // todo!("windows")
     fn should_auto_hide_scrollbars(&self) -> bool {
