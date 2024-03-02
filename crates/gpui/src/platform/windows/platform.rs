@@ -129,17 +129,16 @@ impl WindowsPlatform {
     }
 
     fn message_loop(&self) {
+        const MAX_MESSAGE_PROC: i32 = 20;
+
         loop {
             let wait_index = unsafe {
                 MsgWaitForMultipleObjects(Some(&[self.inner.event]), false, INFINITE, QS_ALLINPUT)
             };
 
-            if wait_index == WAIT_OBJECT_0 {
-                for runnable in self.inner.main_receiver.drain() {
-                    runnable.run();
-                }
-            } else if wait_index == WAIT_EVENT(WAIT_OBJECT_0.0 + 1) {
-                if let Some(msg) = self.try_get_message() {
+            if wait_index == WAIT_EVENT(WAIT_OBJECT_0.0 + 1) {
+                let mut msg_proc_count = 0;
+                while let Some(msg) = self.try_get_message() {
                     if msg.message == WM_QUIT {
                         return;
                     }
@@ -149,9 +148,19 @@ impl WindowsPlatform {
                     }
 
                     unsafe { DispatchMessageW(&msg) };
+
+                    msg_proc_count += 1;
+
+                    if msg_proc_count > MAX_MESSAGE_PROC {
+                        break;
+                    }
                 }
-            } else if wait_index == WAIT_FAILED {
-                unsafe { GetLastError().log_err() };
+            }
+
+            std::debug_assert_ne!(wait_index, WAIT_FAILED);
+
+            for runnable in self.inner.main_receiver.drain() {
+                runnable.run();
             }
         }
     }
