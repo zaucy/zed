@@ -58,7 +58,7 @@ pub(crate) struct WindowsWindowInner {
     renderer: RefCell<BladeRenderer>,
     callbacks: RefCell<Callbacks>,
     platform_inner: Rc<WindowsPlatformInner>,
-    handle: AnyWindowHandle,
+    pub(crate) handle: AnyWindowHandle,
 }
 
 #[derive(PartialEq)]

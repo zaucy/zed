@@ -25,19 +25,22 @@ use windows::Win32::{
         DataExchange::SetClipboardData,
         Threading::{CreateEventW, GetCurrentProcess, GetCurrentThread, ResetEvent, INFINITE},
     },
-    UI::WindowsAndMessaging::{
-        DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowLongPtrW, GetWindowLongW,
-        MsgWaitForMultipleObjects, PeekMessageW, PostQuitMessage, TranslateMessage, GWLP_USERDATA,
-        MSG, PM_REMOVE, QS_ALLINPUT, WINDOW_LONG_PTR_INDEX, WM_KEYDOWN, WM_KEYUP, WM_QUIT,
-        WM_SYSKEYDOWN, WM_SYSKEYUP,
+    UI::{
+        Input::KeyboardAndMouse::GetActiveWindow,
+        WindowsAndMessaging::{
+            DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowLongPtrW, GetWindowLongW,
+            MsgWaitForMultipleObjects, PeekMessageW, PostQuitMessage, TranslateMessage,
+            GWLP_USERDATA, MSG, PM_REMOVE, QS_ALLINPUT, WINDOW_LONG_PTR_INDEX, WM_KEYDOWN,
+            WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
+        },
     },
 };
 
 use crate::{
     Action, AnyWindowHandle, BackgroundExecutor, CallbackResult, ClipboardItem, CursorStyle,
     ForegroundExecutor, Keymap, Menu, PathPromptOptions, Platform, PlatformDisplay, PlatformInput,
-    PlatformTextSystem, PlatformWindow, Task, WindowAppearance, WindowOptions, WindowsDispatcher,
-    WindowsDisplay, WindowsTextSystem, WindowsWindow, WindowsWindowInner,
+    PlatformTextSystem, PlatformWindow, Task, WindowAppearance, WindowId, WindowOptions,
+    WindowsDispatcher, WindowsDisplay, WindowsTextSystem, WindowsWindow, WindowsWindowInner,
 };
 
 pub(crate) struct WindowsPlatform {
@@ -231,7 +234,23 @@ impl Platform for WindowsPlatform {
 
     // todo!("windows")
     fn active_window(&self) -> Option<AnyWindowHandle> {
-        unimplemented!()
+        let active_hwnd = unsafe { GetActiveWindow() };
+        if active_hwnd.0 == 0 {
+            return None;
+        }
+
+        let ptr =
+            unsafe { get_window_long(active_hwnd, GWLP_USERDATA) } as *mut Weak<WindowsWindowInner>;
+        if ptr.is_null() {
+            return None;
+        }
+
+        let inner = unsafe { &*ptr };
+        if let Some(inner) = inner.upgrade() {
+            return Some(inner.handle);
+        }
+
+        return None;
     }
 
     fn open_window(
