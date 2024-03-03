@@ -32,10 +32,11 @@ use windows::{
                 SetWindowLongPtrW, SetWindowLongW, SetWindowTextW, ShowWindow, CREATESTRUCTW,
                 CW_USEDEFAULT, GWLP_USERDATA, HMENU, IDC_ARROW, SW_MAXIMIZE, SW_SHOW,
                 WINDOW_EX_STYLE, WINDOW_LONG_PTR_INDEX, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_KEYDOWN,
-                WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
-                WM_MOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP,
-                WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
-                WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE, XBUTTON1, XBUTTON2,
+                WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+                WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE, WM_NCCREATE, WM_NCDESTROY,
+                WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN,
+                WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+                WS_VISIBLE, XBUTTON1, XBUTTON2,
             },
         },
     },
@@ -45,8 +46,9 @@ use crate::{
     get_window_long, platform::blade::BladeRenderer, AnyWindowHandle, Bounds, GlobalPixels,
     HiLoWord, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, NavigationDirection, Pixels, PlatformAtlas, PlatformDisplay,
-    PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptLevel, Scene, Size,
-    WindowAppearance, WindowBounds, WindowOptions, WindowsDisplay, WindowsPlatformInner,
+    PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptLevel, Scene, ScrollDelta,
+    Size, TouchPhase, WindowAppearance, WindowBounds, WindowOptions, WindowsDisplay,
+    WindowsPlatformInner,
 };
 
 pub(crate) struct WindowsWindowInner {
@@ -291,6 +293,12 @@ impl WindowsWindowInner {
                 }
                 return LRESULT(1);
             }
+            WM_MOUSEWHEEL => {
+                return self.handle_mouse_wheel_msg(wparam, lparam);
+            }
+            WM_MOUSEHWHEEL => {
+                return self.handle_mouse_horizontal_wheel_msg(wparam, lparam);
+            }
             WM_CHAR | WM_SYSCHAR => {
                 return self.handle_char_msg(wparam);
             }
@@ -488,6 +496,50 @@ impl WindowsWindowInner {
                 click_count: 1,
             };
             if callback(PlatformInput::MouseUp(event)) {
+                return LRESULT(0);
+            }
+        }
+        LRESULT(1)
+    }
+
+    fn handle_mouse_wheel_msg(&self, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        let mut callbacks: std::cell::RefMut<'_, Callbacks> = self.callbacks.borrow_mut();
+        if let Some(callback) = callbacks.input.as_mut() {
+            let x = Pixels::from(lparam.loword() as f32);
+            let y = Pixels::from(lparam.hiword() as f32);
+            let wheel_distance = wparam.hiword();
+            let event = crate::ScrollWheelEvent {
+                position: Point { x, y },
+                delta: ScrollDelta::Pixels(Point {
+                    x: Pixels::ZERO,
+                    y: Pixels(wheel_distance as f32),
+                }),
+                modifiers: self.current_modifiers(),
+                touch_phase: TouchPhase::Moved,
+            };
+            if callback(PlatformInput::ScrollWheel(event)) {
+                return LRESULT(0);
+            }
+        }
+        LRESULT(1)
+    }
+
+    fn handle_mouse_horizontal_wheel_msg(&self, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        let mut callbacks: std::cell::RefMut<'_, Callbacks> = self.callbacks.borrow_mut();
+        if let Some(callback) = callbacks.input.as_mut() {
+            let x = Pixels::from(lparam.loword() as f32);
+            let y = Pixels::from(lparam.hiword() as f32);
+            let wheel_distance = wparam.hiword();
+            let event = crate::ScrollWheelEvent {
+                position: Point { x, y },
+                delta: ScrollDelta::Pixels(Point {
+                    x: Pixels(wheel_distance as f32),
+                    y: Pixels::ZERO,
+                }),
+                modifiers: self.current_modifiers(),
+                touch_phase: TouchPhase::Moved,
+            };
+            if callback(PlatformInput::ScrollWheel(event)) {
                 return LRESULT(0);
             }
         }
