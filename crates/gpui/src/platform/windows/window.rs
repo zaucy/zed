@@ -291,14 +291,12 @@ impl WindowsWindowInner {
                 }
                 return LRESULT(1);
             }
-            WM_KEYDOWN | WM_SYSKEYDOWN => {
-                return LRESULT(0);
-            }
-            WM_KEYUP | WM_SYSKEYUP => {
-                return LRESULT(0);
-            }
             WM_CHAR | WM_SYSCHAR => {
                 return self.handle_char_msg(wparam);
+            }
+            // These events are handled by the immediate handler
+            WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP => {
+                return LRESULT(0);
             }
             _ => return unsafe { DefWindowProcW(self.hwnd, msg, wparam, lparam) },
         }
