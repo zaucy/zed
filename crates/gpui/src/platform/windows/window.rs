@@ -281,8 +281,8 @@ impl WindowsWindowInner {
             }
             WM_XBUTTONUP => {
                 let nav_dir = match wparam.hiword() {
-                    XBUTTON1 => Some(NavigationDirection::Forward),
-                    XBUTTON2 => Some(NavigationDirection::Back),
+                    XBUTTON1 => Some(NavigationDirection::Back),
+                    XBUTTON2 => Some(NavigationDirection::Forward),
                     _ => None,
                 };
 
