@@ -738,39 +738,87 @@ impl WindowsWindowInner {
     }
 
     fn handle_nc_mouse_move_msg(&self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-        if self.handle_mouse_move_msg(lparam, wparam) == LRESULT(0) {
-            LRESULT(0)
-        } else {
-            unsafe { DefWindowProcW(self.hwnd, msg, wparam, lparam) }
+        let mut cursor_point = POINT {
+            x: lparam.signed_loword().into(),
+            y: lparam.signed_hiword().into(),
+        };
+        unsafe { ScreenToClient(self.hwnd, &mut cursor_point) };
+        let x = Pixels::from(cursor_point.x as f32);
+        let y = Pixels::from(cursor_point.y as f32);
+        self.mouse_position.set(Point { x, y });
+        let mut callbacks = self.callbacks.borrow_mut();
+        if let Some(callback) = callbacks.input.as_mut() {
+            let event = MouseMoveEvent {
+                position: Point { x, y },
+                pressed_button: None,
+                modifiers: self.current_modifiers(),
+            };
+            if callback(PlatformInput::MouseMove(event)) {
+                return LRESULT(0);
+            }
         }
+        drop(callbacks);
+        unsafe { DefWindowProcW(self.hwnd, msg, wparam, lparam) }
     }
 
     fn handle_nc_mouse_down_msg(
         &self,
-        mouse_button: MouseButton,
+        button: MouseButton,
         msg: u32,
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        if self.handle_mouse_down_msg(mouse_button, lparam) == LRESULT(0) {
-            LRESULT(0)
-        } else {
-            unsafe { DefWindowProcW(self.hwnd, msg, wparam, lparam) }
+        let mut callbacks = self.callbacks.borrow_mut();
+        if let Some(callback) = callbacks.input.as_mut() {
+            let mut cursor_point = POINT {
+                x: lparam.signed_loword().into(),
+                y: lparam.signed_hiword().into(),
+            };
+            unsafe { ScreenToClient(self.hwnd, &mut cursor_point) };
+            let x = Pixels::from(cursor_point.x as f32);
+            let y = Pixels::from(cursor_point.y as f32);
+            let event = MouseDownEvent {
+                button: button.clone(),
+                position: Point { x, y },
+                modifiers: self.current_modifiers(),
+                click_count: 1,
+            };
+            if callback(PlatformInput::MouseDown(event)) {
+                return LRESULT(0);
+            }
         }
+        drop(callbacks);
+        unsafe { DefWindowProcW(self.hwnd, msg, wparam, lparam) }
     }
 
     fn handle_nc_mouse_up_msg(
         &self,
-        mouse_button: MouseButton,
+        button: MouseButton,
         msg: u32,
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        if self.handle_mouse_up_msg(mouse_button, lparam) == LRESULT(0) {
-            LRESULT(0)
-        } else {
-            unsafe { DefWindowProcW(self.hwnd, msg, wparam, lparam) }
+        let mut callbacks = self.callbacks.borrow_mut();
+        if let Some(callback) = callbacks.input.as_mut() {
+            let mut cursor_point = POINT {
+                x: lparam.signed_loword().into(),
+                y: lparam.signed_hiword().into(),
+            };
+            unsafe { ScreenToClient(self.hwnd, &mut cursor_point) };
+            let x = Pixels::from(cursor_point.x as f32);
+            let y = Pixels::from(cursor_point.y as f32);
+            let event = MouseUpEvent {
+                button,
+                position: Point { x, y },
+                modifiers: self.current_modifiers(),
+                click_count: 1,
+            };
+            if callback(PlatformInput::MouseUp(event)) {
+                return LRESULT(0);
+            }
         }
+        drop(callbacks);
+        unsafe { DefWindowProcW(self.hwnd, msg, wparam, lparam) }
     }
 }
 
