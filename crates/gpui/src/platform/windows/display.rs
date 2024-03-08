@@ -24,7 +24,8 @@ impl PlatformDisplay for WindowsDisplay {
 
     // todo(windows)
     fn uuid(&self) -> Result<Uuid> {
-        Err(anyhow!("not implemented yet."))
+        Ok(Uuid::default())
+        // Err(anyhow!("not implemented yet."))
     }
 
     fn bounds(&self) -> Bounds<GlobalPixels> {

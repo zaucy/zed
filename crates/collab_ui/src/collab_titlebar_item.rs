@@ -67,12 +67,15 @@ impl Render for CollabTitlebarItem {
             .map(|this| {
                 if matches!(cx.window_bounds(), WindowBounds::Fullscreen) {
                     this.pl_2()
-                } else {
+                } else if cfg!(macos) {
                     // Use pixels here instead of a rem-based size because the macOS traffic
                     // lights are a static size, and don't scale with the rest of the UI.
                     this.pl(px(80.))
+                } else {
+                    this.pl_2()
                 }
             })
+            .map(|this| this.pr(px(80.)))
             .bg(cx.theme().colors().title_bar_background)
             .on_click(|event, cx| {
                 if event.up.click_count == 2 {
