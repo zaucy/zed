@@ -3,10 +3,10 @@ use auto_update::AutoUpdateStatus;
 use call::{ActiveCall, ParticipantLocation, Room};
 use client::{proto::PeerId, Client, User, UserStore};
 use gpui::{
-    actions, canvas, div, point, px, Action, AnyElement, AppContext, Element, Hsla,
-    InteractiveElement, IntoElement, Model, ParentElement, Path, Render,
-    StatefulInteractiveElement, Styled, Subscription, View, ViewContext, VisualContext, WeakView,
-    WindowBounds,
+    actions, canvas, div, hsla, point, px, Action, AnyElement, AppContext, Element, FontWeight,
+    Hsla, InteractiveElement, IntoElement, Model, ParentElement, Path, Render,
+    StatefulInteractiveElement, Styled, Subscription, TextStyle, View, ViewContext, VisualContext,
+    WeakView, WindowBounds,
 };
 use project::{Project, RepositoryEntry};
 use recent_projects::RecentProjects;
@@ -326,6 +326,13 @@ impl Render for CollabTitlebarItem {
                             el.children(self.render_connection_status(status, cx))
                                 .child(self.render_sign_in_button(cx))
                                 .child(self.render_user_menu_button(cx))
+                        }
+                    })
+                    .map(|el| {
+                        if cfg!(target_os = "windows") {
+                            el.child(self.render_caption_buttons(cx))
+                        } else {
+                            el
                         }
                     }),
             )
@@ -743,5 +750,30 @@ impl CollabTitlebarItem {
                         .tooltip(move |cx| Tooltip::text("Toggle User Menu", cx)),
                 )
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn render_caption_buttons(&mut self, cx: &mut ViewContext<Self>) -> impl Element {
+        div().id("caption-buttons-windows").children(vec![
+            ButtonLike::new("minimize")
+                .child(
+                    div().font("Segoe Fluent Icons").child(""), // Minimize icon
+                )
+                .style(ButtonStyle::Subtle)
+                .on_click(|_, cx| cx.minimize_window()),
+            ButtonLike::new("maximize")
+                .child(
+                    div().font("Segoe Fluent Icons").child(""), // Maximize icon
+                )
+                .style(ButtonStyle::Subtle)
+                .on_click(|_, cx| unimplemented!()),
+            ButtonLike::new("close")
+                .child(
+                    div().font("Segoe Fluent Icons").child(""), // Close icon
+                )
+                .style(ButtonStyle::Subtle)
+                .on_click(|_, cx| unimplemented!()),
+        ])
+        //.anchor(gpui::AnchorCorner::TopRight)
     }
 }
