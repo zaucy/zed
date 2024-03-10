@@ -129,6 +129,10 @@ impl TextSystem {
         }
         for fallback in &self.fallback_font_stack {
             if let Ok(font_id) = self.font_id(fallback) {
+                println!(
+                    "failed to resolve font {} using fallback {}",
+                    font.family, fallback.family
+                );
                 return font_id;
             }
         }

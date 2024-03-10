@@ -754,26 +754,34 @@ impl CollabTitlebarItem {
 
     #[cfg(target_os = "windows")]
     fn render_caption_buttons(&mut self, cx: &mut ViewContext<Self>) -> impl Element {
-        div().id("caption-buttons-windows").children(vec![
-            ButtonLike::new("minimize")
-                .child(
-                    div().font("Segoe Fluent Icons").child(""), // Minimize icon
-                )
-                .style(ButtonStyle::Subtle)
-                .on_click(|_, cx| cx.minimize_window()),
-            ButtonLike::new("maximize")
-                .child(
-                    div().font("Segoe Fluent Icons").child(""), // Maximize icon
-                )
-                .style(ButtonStyle::Subtle)
-                .on_click(|_, cx| unimplemented!()),
-            ButtonLike::new("close")
-                .child(
-                    div().font("Segoe Fluent Icons").child(""), // Close icon
-                )
-                .style(ButtonStyle::Subtle)
-                .on_click(|_, cx| unimplemented!()),
-        ])
+        // let icon_style = TextStyle {
+        //     font_family: "Segoe Fluent Icons".into(),
+        //     font_size: 16.into(),
+        //     ..TextStyle::default()
+        // };
+
+        use gpui::Rgba;
+
+        div()
+            .id("caption-buttons-windows")
+            .flex()
+            .flex_row()
+            .content_stretch()
+            .font("Segoe Fluent Icons")
+            .children(vec![
+                div().child("\u{e921}"), // minimize
+                div().child("\u{e922}"), // maximize
+                div()
+                    .hover(|style| {
+                        style.bg(Rgba {
+                            r: 0.7,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 1.0,
+                        })
+                    })
+                    .child("\u{e8bb}"), // close
+            ])
         //.anchor(gpui::AnchorCorner::TopRight)
     }
 }
