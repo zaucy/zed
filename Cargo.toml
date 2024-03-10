@@ -94,6 +94,7 @@ members = [
     "crates/zed_actions",
 
     "extensions/gleam",
+    "extensions/slint",
     "extensions/uiua",
 
     "tooling/xtask",
