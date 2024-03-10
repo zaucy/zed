@@ -24,10 +24,7 @@ use windows::{
         Foundation::{
             FALSE, HINSTANCE, HWND, LPARAM, LRESULT, MAX_PATH, POINT, POINTL, RECT, S_OK, WPARAM,
         },
-        Graphics::Gdi::{
-            BeginPaint, DrawCaption, EndPaint, InvalidateRect, ScreenToClient, DC_BUTTONS, HDC,
-            PAINTSTRUCT,
-        },
+        Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, ScreenToClient, HDC, PAINTSTRUCT},
         System::{
             Com::{IDataObject, DVASPECT_CONTENT, FORMATETC, TYMED_HGLOBAL},
             Ole::{

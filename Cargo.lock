@@ -3836,6 +3836,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "fontdb"
+version = "0.16.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0299020c3ef3f60f526a4f64ab4a3d4ce116b1acbf24cdd22da0068e5d81dc3"
+dependencies = [
+ "fontconfig-parser",
+ "log",
+ "memmap2 0.9.4",
+ "slotmap",
+ "tinyvec",
+ "ttf-parser 0.20.0",
+]
+
+[[package]]
 name = "foreign-types"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4392,6 +4406,7 @@ dependencies = [
  "etagere",
  "flume",
  "font-kit",
+ "fontdb 0.16.2",
  "foreign-types 0.5.0",
  "futures 0.3.28",
  "gpui_macros",
