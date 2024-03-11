@@ -170,6 +170,7 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn content_size(&self) -> Size<Pixels>;
     fn scale_factor(&self) -> f32;
     fn titlebar_height(&self) -> Pixels;
+    fn titlebar_top_padding(&self) -> Pixels;
     fn appearance(&self) -> WindowAppearance;
     fn display(&self) -> Rc<dyn PlatformDisplay>;
     fn mouse_position(&self) -> Point<Pixels>;

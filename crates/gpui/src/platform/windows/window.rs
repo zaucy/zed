@@ -158,6 +158,15 @@ impl WindowsWindowInner {
         }
     }
 
+    fn is_maximized(&self) -> bool {
+        let mut placement = WINDOWPLACEMENT::default();
+        placement.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+        if unsafe { GetWindowPlacement(self.hwnd, &mut placement) }.is_ok() {
+            return placement.showCmd == SW_SHOWMAXIMIZED.0 as u32;
+        }
+        return false;
+    }
+
     fn get_titlebar_rect(&self) -> anyhow::Result<RECT> {
         let top_and_bottom_borders = 2;
         let theme = unsafe { OpenThemeData(self.hwnd, w!("WINDOW")) };
@@ -173,8 +182,13 @@ impl WindowsWindowInner {
         }?;
         unsafe { CloseThemeData(theme) }?;
 
-        let height =
+        let mut height =
             (title_bar_size.cy as f32 * self.scale_factor).round() as i32 + top_and_bottom_borders;
+
+        if self.is_maximized() {
+            let dpi = unsafe { GetDpiForWindow(self.hwnd) };
+            height += unsafe { (GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi) * 2) as i32 };
+        }
 
         let mut rect = RECT::default();
         unsafe { GetClientRect(self.hwnd, &mut rect) }?;
@@ -968,6 +982,15 @@ impl PlatformWindow for WindowsWindow {
     // todo(windows)
     fn scale_factor(&self) -> f32 {
         self.inner.scale_factor
+    }
+
+    fn titlebar_top_padding(&self) -> Pixels {
+        if self.inner.is_maximized() {
+            let dpi = unsafe { GetDpiForWindow(self.inner.hwnd) };
+            unsafe { (GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi) * 2) as f32 }.into()
+        } else {
+            0.0.into()
+        }
     }
 
     fn titlebar_height(&self) -> Pixels {

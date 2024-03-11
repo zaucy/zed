@@ -19,6 +19,7 @@ pub struct PlatformTitlebar {
 
 impl PlatformTitlebar {
     fn render_caption_buttons(cx: &mut WindowContext) -> impl Element {
+        let titlebar_height = cx.titlebar_height();
         let close_btn_hover_color = Rgba {
             r: 232.0 / 255.0,
             g: 17.0 / 255.0,
@@ -28,28 +29,30 @@ impl PlatformTitlebar {
 
         let btn_hover_color = match cx.appearance() {
             Light | VibrantLight => Rgba {
-                r: 0.9,
-                g: 0.9,
-                b: 0.9,
-                a: 0.5,
-            },
-            Dark | VibrantDark => Rgba {
                 r: 0.1,
                 g: 0.1,
                 b: 0.1,
+                a: 0.2,
+            },
+            Dark | VibrantDark => Rgba {
+                r: 0.9,
+                g: 0.9,
+                b: 0.9,
                 a: 0.1,
             },
         };
 
-        fn windows_caption_btn(icon_text: &'static str, hover_color: Rgba) -> impl IntoElement {
+        fn windows_caption_btn(icon_text: &'static str, hover_color: Rgba) -> Div {
             let mut active_color = hover_color.clone();
-            active_color.a -= 0.2;
+            active_color.a *= 0.2;
             div()
                 .h_full()
+                .flex()
+                .flex_row()
                 .justify_center()
                 .content_center()
                 .items_center()
-                .w_16()
+                .w_12()
                 .hover(|style| style.bg(hover_color))
                 // .active(|style| style.bg(pressed_color))
                 .child(icon_text)
@@ -61,8 +64,8 @@ impl PlatformTitlebar {
             .flex_row()
             .justify_center()
             .content_stretch()
-            .max_h(cx.titlebar_height())
-            .min_h(cx.titlebar_height())
+            .max_h(titlebar_height)
+            .min_h(titlebar_height)
             .font("Segoe Fluent Icons")
             .children(vec![
                 windows_caption_btn("\u{e921}", btn_hover_color), // minimize
@@ -95,6 +98,7 @@ impl RenderOnce for PlatformTitlebar {
         h_flex()
             .id("titlebar")
             .w_full()
+            .pt(cx.titlebar_top_padding())
             .max_h(cx.titlebar_height())
             .min_h(cx.titlebar_height())
             .map(|mut this| {
