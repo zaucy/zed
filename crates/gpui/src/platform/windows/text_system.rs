@@ -6,9 +6,11 @@ use crate::{
 use anyhow::{anyhow, Context, Ok, Result};
 use collections::{HashMap, HashSet};
 use cosmic_text::{
-    fontdb::Query, Attrs, AttrsList, BufferLine, CacheKey, Family, Font as CosmicTextFont,
-    FontSystem, SwashCache, Weight,
+    fontdb::{Database, FaceInfo, Query, Source, ID},
+    Attrs, AttrsList, BufferLine, CacheKey, Family, Font as CosmicTextFont, FontSystem, Style,
+    SwashCache, Weight,
 };
+use fontdb::Stretch;
 use itertools::Itertools;
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use pathfinder_geometry::{
@@ -16,7 +18,7 @@ use pathfinder_geometry::{
     vector::{Vector2F, Vector2I},
 };
 use smallvec::SmallVec;
-use std::{borrow::Cow, sync::Arc};
+use std::{borrow::Cow, path::PathBuf, sync::Arc};
 use util::{defer, ResultExt};
 use windows::{
     core::Interface,
@@ -123,7 +125,7 @@ unsafe extern "system" fn load_system_font_enum_fn(
 impl WindowsTextSystem {
     pub(crate) fn new() -> Self {
         let mut this = Self(RwLock::new(WindowsTextSystemState {
-            font_system: FontSystem::new(),
+            font_system: FontSystem::new_with_locale_and_db(String::from("en-US"), Database::new()),
             system_font_paths: HashSet::default(),
             swash_cache: SwashCache::new(),
             fonts: Vec::new(),
@@ -133,41 +135,39 @@ impl WindowsTextSystem {
             postscript_names_by_font_id: HashMap::default(),
         }));
 
+        this.load_ui_icons_font();
         this.load_system_fonts();
 
         // @HACK: will remove, just debugging
-        // let icon_font = font("Segoe Fluent Icons");
-        // let icon_font_id = this.font_id(&icon_font);
-        // if icon_font_id.is_err() {
+        let icon_font = font("Segoe Fluent Icons");
+        let icon_font_id = this.font_id(&icon_font).log_err();
+        // if icon_font_id.log_err().is_none() {
         //     let mut state = this.0.get_mut();
-        //     let face_info = state
-        //         .font_system
-        //         .db()
-        //         .faces()
-        //         .find(|face_info| match &face_info.source {
-        //             cosmic_text::fontdb::Source::Binary(_) => false,
-        //             cosmic_text::fontdb::Source::File(file) => {
-        //                 file.file_name()
-        //                     .unwrap()
-        //                     .to_string_lossy()
-        //                     .to_ascii_lowercase()
-        //                     == "segoeicons.ttf"
-        //             }
-        //             cosmic_text::fontdb::Source::SharedFile(file, _) => {
-        //                 file.file_name()
-        //                     .unwrap()
-        //                     .to_string_lossy()
-        //                     .to_ascii_lowercase()
-        //                     == "segoeicons.ttf"
-        //             }
-        //         })
-        //         .unwrap();
-        //     let icon_font_rc = state.font_system.get_font(face_info.id).unwrap();
+        //     let segoe_ui_path: PathBuf =
+        //         format!("{}\\Fonts\\SegoeIcons.ttf", env!("windir")).into();
+
         //     state
-        //         .font_selections
-        //         .insert(icon_font.clone(), FontId(0))
-        //         .unwrap();
-        //     state.fonts.push(icon_font_rc);
+        //         .font_system
+        //         .db_mut()
+        //         .load_font_file(segoe_ui_path)
+        //         .log_err();
+
+        //     let mut font_system = &mut state.font_system;
+        //     let faces: Vec<&FaceInfo> = font_system.db().faces().collect();
+        //     'a: for face in faces {
+        //         let face_id = face.id.clone();
+        //         for (fam, _) in &face.families {
+        //             if fam == "Segoe Fluent Icons" {
+        //                 dbg!("FOUND IT");
+        //                 let icon_font_rc = font_system.get_font(face_id).unwrap();
+        //                 state
+        //                     .font_selections
+        //                     .insert(icon_font.clone(), FontId(state.fonts.len()));
+        //                 state.fonts.push(icon_font_rc);
+        //                 break 'a;
+        //             }
+        //         }
+        //     }
         // }
 
         this
@@ -202,6 +202,38 @@ impl WindowsTextSystem {
             font_db.load_font_file(font_path).log_err();
             println!("Loaded Font {}", font_path);
         }
+    }
+
+    fn load_ui_icons_font(&mut self) {
+        let mut state = self.0.get_mut();
+        let segoe_ui_path: PathBuf = format!("{}\\Fonts\\SegoeIcons.ttf", env!("windir")).into();
+        let locale = state.font_system.locale();
+
+        state.font_system.db_mut().push_face_info(FaceInfo {
+            id: ID::dummy(),
+            source: Source::File(segoe_ui_path),
+            index: 0,
+            families: vec![(
+                String::from("Segoe Fluent Icons"),
+                cosmic_text::fontdb::Language::English_UnitedStates, // TODO
+            )],
+            post_script_name: String::from("Segoe Fluent Icons"),
+            style: Style::Normal,
+            weight: cosmic_text::Weight::NORMAL,
+            stretch: cosmic_text::Stretch::Normal,
+            monospaced: false,
+        });
+        let face_id = state
+            .font_system
+            .get_font_matches(Attrs::new().family(cosmic_text::Family::Name("Segoe Fluent Icons")));
+        let icon_font_rc = state
+            .font_system
+            .get_font(face_id.first().unwrap().clone())
+            .unwrap();
+        state
+            .font_selections
+            .insert(font("Segoe Fluent Icons"), FontId(state.fonts.len()));
+        state.fonts.push(icon_font_rc);
     }
 }
 
@@ -385,10 +417,11 @@ impl WindowsTextSystemState {
             .get_font_matches(Attrs::new().family(cosmic_text::Family::Name(name)));
         for font in family.as_ref() {
             let font = self.font_system.get_font(*font).unwrap();
-            if font.as_swash().charmap().map('m') == 0 {
-                self.font_system.db_mut().remove_face(font.id());
-                continue;
-            };
+            // TODO: figure out why this is causing fluent icons from loading
+            // if font.as_swash().charmap().map('m') == 0 {
+            //     self.font_system.db_mut().remove_face(font.id());
+            //     continue;
+            // };
 
             let font_id = FontId(self.fonts.len());
             font_ids.push(font_id);
