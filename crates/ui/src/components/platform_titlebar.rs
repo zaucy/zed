@@ -4,7 +4,7 @@ use gpui::{
     div,
     prelude::FluentBuilder,
     px, AnyElement, Div, Element, Fill, Hsla, InteractiveElement, IntoElement, ParentElement,
-    RenderOnce, Rgba, Styled,
+    RenderOnce, Rgba, StyleRefinement, Styled,
     WindowAppearance::{Dark, Light, VibrantDark, VibrantLight},
     WindowBounds, WindowContext,
 };
@@ -15,6 +15,13 @@ use crate::{h_flex, ButtonLike};
 pub struct PlatformTitlebar {
     titlebar_bg: Option<Fill>,
     children: SmallVec<[AnyElement; 2]>,
+    style: StyleRefinement,
+}
+
+impl Styled for PlatformTitlebar {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
 }
 
 impl PlatformTitlebar {
@@ -91,6 +98,7 @@ pub fn platform_titlebar() -> PlatformTitlebar {
     PlatformTitlebar {
         titlebar_bg: None,
         children: SmallVec::new(),
+        style: StyleRefinement::default(),
     }
 }
 
@@ -119,6 +127,10 @@ impl RenderOnce for PlatformTitlebar {
             .content_stretch()
             .child(
                 div()
+                    .map(|mut this| {
+                        this.style().clone_from(&self.style);
+                        this
+                    })
                     .flex()
                     .flex_row()
                     .w_full()

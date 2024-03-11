@@ -9,7 +9,6 @@ use cosmic_text::Font as CosmicTextFont;
 use cosmic_text::{
     fontdb::Query, Attrs, AttrsList, BufferLine, CacheKey, Family, FontSystem, SwashCache,
 };
-use itertools::Itertools;
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use pathfinder_geometry::{
     rect::{RectF, RectI},

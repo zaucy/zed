@@ -65,6 +65,7 @@ impl Render for CollabTitlebarItem {
             //         cx.zoom_window();
             //     }
             // })
+            .px_2()
             // left side
             .child(
                 h_flex()
