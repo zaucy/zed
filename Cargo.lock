@@ -1452,7 +1452,7 @@ dependencies = [
 [[package]]
 name = "blade-graphics"
 version = "0.3.0"
-source = "git+https://github.com/kvark/blade?rev=43721bf42d298b7cbee2195ee66f73a5f1c7b2fc#43721bf42d298b7cbee2195ee66f73a5f1c7b2fc"
+source = "git+https://github.com/flukejones/blade?rev=64525709c586550be2a20d9b2c0b205a11232f78#64525709c586550be2a20d9b2c0b205a11232f78"
 dependencies = [
  "ash",
  "ash-window",
@@ -1482,7 +1482,7 @@ dependencies = [
 [[package]]
 name = "blade-macros"
 version = "0.2.1"
-source = "git+https://github.com/kvark/blade?rev=43721bf42d298b7cbee2195ee66f73a5f1c7b2fc#43721bf42d298b7cbee2195ee66f73a5f1c7b2fc"
+source = "git+https://github.com/flukejones/blade?rev=64525709c586550be2a20d9b2c0b205a11232f78#64525709c586550be2a20d9b2c0b205a11232f78"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3821,6 +3821,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "fontdb"
+version = "0.16.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0299020c3ef3f60f526a4f64ab4a3d4ce116b1acbf24cdd22da0068e5d81dc3"
+dependencies = [
+ "fontconfig-parser",
+ "log",
+ "memmap2 0.9.4",
+ "slotmap",
+ "tinyvec",
+ "ttf-parser 0.20.0",
+]
+
+[[package]]
 name = "foreign-types"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4362,6 +4376,7 @@ dependencies = [
  "etagere",
  "flume",
  "font-kit",
+ "fontdb 0.16.2",
  "foreign-types 0.5.0",
  "futures 0.3.28",
  "gpui_macros",
@@ -12870,6 +12885,13 @@ dependencies = [
 
 [[package]]
 name = "zed_gleam"
+version = "0.0.1"
+dependencies = [
+ "zed_extension_api",
+]
+
+[[package]]
+name = "zed_slint"
 version = "0.0.1"
 dependencies = [
  "zed_extension_api",

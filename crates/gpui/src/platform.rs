@@ -22,10 +22,10 @@ mod test;
 mod windows;
 
 use crate::{
-    Action, AnyWindowHandle, AsyncWindowContext, BackgroundExecutor, Bounds, DevicePixels, Font,
-    FontId, FontMetrics, FontRun, ForegroundExecutor, GlobalPixels, GlyphId, Keymap, LineLayout,
-    Pixels, PlatformInput, Point, RenderGlyphParams, RenderImageParams, RenderSvgParams, Scene,
-    SharedString, Size, Task, TaskLabel, WindowContext,
+    Action, AnyElement, AnyWindowHandle, AsyncWindowContext, BackgroundExecutor, Bounds,
+    DevicePixels, Element, Font, FontId, FontMetrics, FontRun, ForegroundExecutor, GlobalPixels,
+    GlyphId, Keymap, LineLayout, Pixels, PlatformInput, Point, RenderGlyphParams,
+    RenderImageParams, RenderSvgParams, Scene, SharedString, Size, Task, TaskLabel, WindowContext,
 };
 use anyhow::Result;
 use async_task::Runnable;
@@ -170,6 +170,7 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn content_size(&self) -> Size<Pixels>;
     fn scale_factor(&self) -> f32;
     fn titlebar_height(&self) -> Pixels;
+    fn titlebar_top_padding(&self) -> Pixels;
     fn appearance(&self) -> WindowAppearance;
     fn display(&self) -> Rc<dyn PlatformDisplay>;
     fn mouse_position(&self) -> Point<Pixels>;

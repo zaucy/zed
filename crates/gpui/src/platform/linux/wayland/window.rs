@@ -308,7 +308,7 @@ impl PlatformWindow for WaylandWindow {
 
     // todo(linux)
     fn titlebar_height(&self) -> Pixels {
-        unimplemented!()
+        Pixels(32.0)
     }
 
     // todo(linux)
@@ -435,6 +435,10 @@ impl PlatformWindow for WaylandWindow {
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         let inner = self.0.inner.borrow_mut();
         inner.renderer.sprite_atlas().clone()
+    }
+
+    fn titlebar_top_padding(&self) -> Pixels {
+        Pixels(0.0)
     }
 }
 

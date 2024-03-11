@@ -504,4 +504,8 @@ impl PlatformWindow for X11Window {
         let inner = self.0.inner.borrow_mut();
         inner.renderer.sprite_atlas().clone()
     }
+
+    fn titlebar_top_padding(&self) -> Pixels {
+        Pixels(0.0)
+    }
 }
