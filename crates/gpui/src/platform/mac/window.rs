@@ -457,6 +457,10 @@ impl MacWindowState {
         })
     }
 
+    fn titlebar_top_padding(&self) -> Pixels {
+        0.0.into()
+    }
+
     fn titlebar_height(&self) -> Pixels {
         unsafe {
             let frame = NSWindow::frame(self.native_window);

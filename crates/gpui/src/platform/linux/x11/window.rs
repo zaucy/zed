@@ -357,6 +357,10 @@ impl PlatformWindow for X11Window {
         self.0.inner.borrow_mut().scale_factor
     }
 
+    fn titlebar_top_padding(&self) -> Pixels {
+        0.0.into()
+    }
+
     // todo(linux)
     fn titlebar_height(&self) -> Pixels {
         unimplemented!()
