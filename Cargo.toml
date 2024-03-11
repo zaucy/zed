@@ -202,8 +202,8 @@ async-compression = { version = "0.4", features = ["gzip", "futures-io"] }
 async-tar = "0.4.2"
 async-trait = "0.1"
 bitflags = "2.4.2"
-blade-graphics = { git = "https://github.com/kvark/blade", rev = "43721bf42d298b7cbee2195ee66f73a5f1c7b2fc" }
-blade-macros = { git = "https://github.com/kvark/blade", rev = "43721bf42d298b7cbee2195ee66f73a5f1c7b2fc" }
+blade-graphics = { git = "https://github.com/flukejones/blade", rev = "64525709c586550be2a20d9b2c0b205a11232f78" }
+blade-macros = { git = "https://github.com/flukejones/blade", rev = "64525709c586550be2a20d9b2c0b205a11232f78" }
 blade-rwh = { package = "raw-window-handle", version = "0.5" }
 cap-std = "2.0"
 chrono = { version = "0.4", features = ["serde"] }
