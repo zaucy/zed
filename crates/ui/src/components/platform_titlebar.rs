@@ -1,8 +1,12 @@
 use smallvec::SmallVec;
 
 use gpui::{
-    div, prelude::FluentBuilder, px, AnyElement, Div, Element, Fill, InteractiveElement,
-    IntoElement, ParentElement, RenderOnce, Rgba, Styled, WindowBounds, WindowContext,
+    div,
+    prelude::FluentBuilder,
+    px, AnyElement, Div, Element, Fill, Hsla, InteractiveElement, IntoElement, ParentElement,
+    RenderOnce, Rgba, Styled,
+    WindowAppearance::{Dark, Light, VibrantDark, VibrantLight},
+    WindowBounds, WindowContext,
 };
 
 use crate::{h_flex, ButtonLike};
@@ -14,30 +18,56 @@ pub struct PlatformTitlebar {
 }
 
 impl PlatformTitlebar {
-    fn render_caption_buttons(_cx: &mut WindowContext) -> impl Element {
+    fn render_caption_buttons(cx: &mut WindowContext) -> impl Element {
+        let close_btn_hover_color = Rgba {
+            r: 232.0 / 255.0,
+            g: 17.0 / 255.0,
+            b: 32.0 / 255.0,
+            a: 1.0,
+        };
+
+        let btn_hover_color = match cx.appearance() {
+            Light | VibrantLight => Rgba {
+                r: 0.9,
+                g: 0.9,
+                b: 0.9,
+                a: 0.5,
+            },
+            Dark | VibrantDark => Rgba {
+                r: 0.1,
+                g: 0.1,
+                b: 0.1,
+                a: 0.1,
+            },
+        };
+
+        fn windows_caption_btn(icon_text: &'static str, hover_color: Rgba) -> impl IntoElement {
+            let mut active_color = hover_color.clone();
+            active_color.a -= 0.2;
+            div()
+                .h_full()
+                .justify_center()
+                .content_center()
+                .items_center()
+                .w_16()
+                .hover(|style| style.bg(hover_color))
+                // .active(|style| style.bg(pressed_color))
+                .child(icon_text)
+        }
+
         div()
             .id("caption-buttons-windows")
             .flex()
             .flex_row()
             .justify_center()
             .content_stretch()
+            .max_h(cx.titlebar_height())
+            .min_h(cx.titlebar_height())
             .font("Segoe Fluent Icons")
             .children(vec![
-                div().h_full().justify_center().w_16().child("\u{e921}"), // minimize
-                div().h_full().justify_center().w_16().child("\u{e922}"), // maximize
-                div()
-                    .h_full()
-                    .justify_center()
-                    .w_16()
-                    .hover(|style| {
-                        style.bg(Rgba {
-                            r: 0.8,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 1.0,
-                        })
-                    })
-                    .child("\u{e8bb}"), // close
+                windows_caption_btn("\u{e921}", btn_hover_color), // minimize
+                windows_caption_btn("\u{e922}", btn_hover_color), // maximize
+                windows_caption_btn("\u{e8bb}", close_btn_hover_color), // close
             ])
     }
 
@@ -65,8 +95,8 @@ impl RenderOnce for PlatformTitlebar {
         h_flex()
             .id("titlebar")
             .w_full()
-            .h(cx.titlebar_height())
-            .neg_my_1() // TODO: figure out why this is needed for the titlebar to be snug
+            .max_h(cx.titlebar_height())
+            .min_h(cx.titlebar_height())
             .map(|mut this| {
                 this.style().background = self.titlebar_bg;
                 if matches!(cx.window_bounds(), WindowBounds::Fullscreen) {
