@@ -3,10 +3,9 @@ use auto_update::AutoUpdateStatus;
 use call::{ActiveCall, ParticipantLocation, Room};
 use client::{proto::PeerId, Client, User, UserStore};
 use gpui::{
-    actions, canvas, div, hsla, point, px, Action, AnyElement, AppContext, Element, FontWeight,
-    Hsla, InteractiveElement, IntoElement, Model, ParentElement, Path, Render,
-    StatefulInteractiveElement, Styled, Subscription, TextStyle, View, ViewContext, VisualContext,
-    WeakView, WindowBounds,
+    actions, canvas, div, point, px, Action, AnyElement, AppContext, Element, Hsla,
+    InteractiveElement, IntoElement, Model, ParentElement, Path, Render,
+    StatefulInteractiveElement, Styled, Subscription, View, ViewContext, VisualContext, WeakView,
 };
 use project::{Project, RepositoryEntry};
 use recent_projects::RecentProjects;
@@ -14,12 +13,12 @@ use rpc::proto;
 use std::sync::Arc;
 use theme::ActiveTheme;
 use ui::{
-    h_flex, popover_menu, prelude::*, Avatar, AvatarAudioStatusIndicator, Button, ButtonLike,
-    ButtonStyle, ContextMenu, Icon, IconButton, IconName, TintColor, Tooltip,
+    h_flex, platform_titlebar, popover_menu, prelude::*, Avatar, AvatarAudioStatusIndicator,
+    Button, ButtonLike, ButtonStyle, ContextMenu, Icon, IconButton, IconName, TintColor, Tooltip,
 };
 use util::ResultExt;
 use vcs_menu::{build_branch_list, BranchList, OpenRecent as ToggleVcsMenu};
-use workspace::{notifications::NotifyResultExt, titlebar_height, Workspace};
+use workspace::{notifications::NotifyResultExt, Workspace};
 
 const MAX_PROJECT_NAME_LENGTH: usize = 40;
 const MAX_BRANCH_NAME_LENGTH: usize = 40;
@@ -59,29 +58,13 @@ impl Render for CollabTitlebarItem {
         let project_id = self.project.read(cx).remote_id();
         let workspace = self.workspace.upgrade();
 
-        h_flex()
-            .id("titlebar")
-            .justify_between()
-            .w_full()
-            .h(titlebar_height(cx))
-            .map(|this| {
-                if matches!(cx.window_bounds(), WindowBounds::Fullscreen) {
-                    this.pl_2()
-                } else if cfg!(macos) {
-                    // Use pixels here instead of a rem-based size because the macOS traffic
-                    // lights are a static size, and don't scale with the rest of the UI.
-                    this.pl(px(80.))
-                } else {
-                    this.pl_2()
-                }
-            })
-            .map(|this| this.pr(px(80.)))
-            .bg(cx.theme().colors().title_bar_background)
-            .on_click(|event, cx| {
-                if event.up.click_count == 2 {
-                    cx.zoom_window();
-                }
-            })
+        platform_titlebar()
+            .titlebar_bg(cx.theme().colors().title_bar_background)
+            // .on_click(|event, cx| {
+            //     if event.up.click_count == 2 {
+            //         cx.zoom_window();
+            //     }
+            // })
             // left side
             .child(
                 h_flex()
@@ -326,13 +309,6 @@ impl Render for CollabTitlebarItem {
                             el.children(self.render_connection_status(status, cx))
                                 .child(self.render_sign_in_button(cx))
                                 .child(self.render_user_menu_button(cx))
-                        }
-                    })
-                    .map(|el| {
-                        if cfg!(target_os = "windows") {
-                            el.child(self.render_caption_buttons(cx))
-                        } else {
-                            el
                         }
                     }),
             )
@@ -750,38 +726,5 @@ impl CollabTitlebarItem {
                         .tooltip(move |cx| Tooltip::text("Toggle User Menu", cx)),
                 )
         }
-    }
-
-    #[cfg(target_os = "windows")]
-    fn render_caption_buttons(&mut self, cx: &mut ViewContext<Self>) -> impl Element {
-        // let icon_style = TextStyle {
-        //     font_family: "Segoe Fluent Icons".into(),
-        //     font_size: 16.into(),
-        //     ..TextStyle::default()
-        // };
-
-        use gpui::Rgba;
-
-        div()
-            .id("caption-buttons-windows")
-            .flex()
-            .flex_row()
-            .content_stretch()
-            .font("Segoe Fluent Icons")
-            .children(vec![
-                div().child("\u{e921}"), // minimize
-                div().child("\u{e922}"), // maximize
-                div()
-                    .hover(|style| {
-                        style.bg(Rgba {
-                            r: 0.7,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 1.0,
-                        })
-                    })
-                    .child("\u{e8bb}"), // close
-            ])
-        //.anchor(gpui::AnchorCorner::TopRight)
     }
 }
