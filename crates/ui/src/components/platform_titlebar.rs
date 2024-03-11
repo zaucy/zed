@@ -67,6 +67,7 @@ impl PlatformTitlebar {
             .max_h(titlebar_height)
             .min_h(titlebar_height)
             .font("Segoe Fluent Icons")
+            .text_size(gpui::Pixels(10.0))
             .children(vec![
                 windows_caption_btn("\u{e921}", btn_hover_color), // minimize
                 windows_caption_btn("\u{e922}", btn_hover_color), // maximize
