@@ -1,6 +1,4 @@
 #![deny(unsafe_op_in_unsafe_fn)]
-// todo(windows): remove
-#![allow(unused_variables)]
 
 use std::{
     any::Any,
@@ -50,33 +48,18 @@ use windows::{
                 VK_RETURN, VK_RIGHT, VK_RWIN, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
             },
             Shell::{DragQueryFileW, HDROP},
-            WindowsAndMessaging::{
-                CreateWindowExW, DefWindowProcW, GetClientRect, GetWindowLongPtrW, GetWindowRect,
-                LoadCursorW, PostQuitMessage, RegisterClassW, SetWindowLongPtrW, SetWindowPos,
-                SetWindowTextW, ShowWindow, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
-                GWLP_USERDATA, HMENU, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION, HTCLIENT,
-                HTLEFT, HTNOWHERE, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, IDC_ARROW,
-                NCCALCSIZE_PARAMS, SM_CXFRAME, SM_CXPADDEDBORDER, SM_CYFRAME, SWP_FRAMECHANGED,
-                SWP_NOMOVE, SWP_NOSIZE, SW_MAXIMIZE, SW_SHOW, WHEEL_DELTA, WINDOW_LONG_PTR_INDEX,
-                WM_ACTIVATE, WM_CHAR, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_KEYDOWN,
-                WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
-                WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE, WM_NCCALCSIZE, WM_NCCREATE,
-                WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMBUTTONDOWN,
-                WM_NCMBUTTONUP, WM_NCMOUSEMOVE, WM_NCRBUTTONDOWN, WM_NCRBUTTONUP, WM_PAINT,
-                WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP,
-                WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WS_EX_APPWINDOW, WS_MAXIMIZEBOX,
-                WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME, XBUTTON1, XBUTTON2,
-            },
+            WindowsAndMessaging::*,
         },
     },
 };
 
 use crate::{
-    platform::blade::BladeRenderer, AnyWindowHandle, Bounds, GlobalPixels, HiLoWord, KeyDownEvent,
-    KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    NavigationDirection, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
-    PlatformInputHandler, PlatformWindow, Point, PromptLevel, Scene, ScrollDelta, Size, TouchPhase,
-    WindowAppearance, WindowBounds, WindowOptions, WindowsDisplay, WindowsPlatformInner,
+    get_window_long, platform::blade::BladeRenderer, set_window_long, AnyWindowHandle, Bounds,
+    GlobalPixels, HiLoWord, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, Pixels, PlatformAtlas,
+    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptLevel,
+    Scene, ScrollDelta, Size, TouchPhase, WindowAppearance, WindowBounds, WindowOptions,
+    WindowsDisplay, WindowsPlatformInner,
 };
 
 #[derive(PartialEq)]
@@ -178,7 +161,6 @@ impl WindowsWindowInner {
     fn get_titlebar_rect(&self) -> anyhow::Result<RECT> {
         let top_and_bottom_borders = 2;
         let theme = unsafe { OpenThemeData(self.hwnd, w!("WINDOW")) };
-        let dpi = unsafe { GetDpiForWindow(self.hwnd) };
         let title_bar_size = unsafe {
             GetThemePartSize(
                 theme,
@@ -221,7 +203,7 @@ impl WindowsWindowInner {
     }
 
     /// returns true if message is handled and should not dispatch
-    pub(crate) fn handle_immediate_msg(&self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
+    pub(crate) fn handle_immediate_msg(&self, msg: u32, wparam: WPARAM, _lparam: LPARAM) -> bool {
         match msg {
             WM_KEYDOWN | WM_SYSKEYDOWN => self.handle_keydown_msg(wparam).is_handled(),
             WM_KEYUP | WM_SYSKEYUP => self.handle_keyup_msg(wparam).is_handled(),
@@ -333,7 +315,7 @@ impl WindowsWindowInner {
 
     fn handle_paint_msg(&self) -> LRESULT {
         let mut paint_struct = PAINTSTRUCT::default();
-        let hdc = unsafe { BeginPaint(self.hwnd, &mut paint_struct) };
+        let _hdc = unsafe { BeginPaint(self.hwnd, &mut paint_struct) };
         let mut callbacks = self.callbacks.borrow_mut();
         if let Some(request_frame) = callbacks.request_frame.as_mut() {
             request_frame();
@@ -671,9 +653,16 @@ impl WindowsWindowInner {
         return unsafe { DefWindowProcW(self.hwnd, msg, wparam, lparam) };
     }
 
-    fn handle_create_msg(&self, lparam: LPARAM) -> LRESULT {
+    fn handle_create_msg(&self, _lparam: LPARAM) -> LRESULT {
         let mut size_rect = RECT::default();
         unsafe { GetWindowRect(self.hwnd, &mut size_rect).log_err() };
+        let width = size_rect.right - size_rect.left;
+        let height = size_rect.bottom - size_rect.top;
+
+        self.size.set(Size {
+            width: GlobalPixels::from(width as f64),
+            height: GlobalPixels::from(height as f64),
+        });
 
         // Inform the application of the frame change to force redrawing with the new
         // client area that is extended into the title bar
@@ -683,8 +672,8 @@ impl WindowsWindowInner {
                 HWND::default(),
                 size_rect.left,
                 size_rect.top,
-                size_rect.right - size_rect.left,
-                size_rect.bottom - size_rect.top,
+                width,
+                height,
                 SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE,
             )
             .log_err()
@@ -692,7 +681,7 @@ impl WindowsWindowInner {
         LRESULT(0)
     }
 
-    fn handle_dpi_changed_msg(&self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    fn handle_dpi_changed_msg(&self, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
         LRESULT(1)
     }
 
@@ -981,10 +970,9 @@ impl PlatformWindow for WindowsWindow {
         self.inner.scale_factor
     }
 
-    // todo(windows)
     fn titlebar_height(&self) -> Pixels {
-        // 20.0.into()
-        0.0.into()
+        let titlebar_rect = self.inner.get_titlebar_rect().unwrap();
+        ((titlebar_rect.bottom - titlebar_rect.top) as f64).into()
     }
 
     // todo(windows)
@@ -1022,10 +1010,10 @@ impl PlatformWindow for WindowsWindow {
 
     fn prompt(
         &self,
-        level: PromptLevel,
-        msg: &str,
-        detail: Option<&str>,
-        answers: &[&str],
+        _level: PromptLevel,
+        _msg: &str,
+        _detail: Option<&str>,
+        _answers: &[&str],
     ) -> Option<Receiver<usize>> {
         let (done_tx, done_rx) = oneshot::channel();
         let msg = msg.to_string();
@@ -1106,7 +1094,7 @@ impl PlatformWindow for WindowsWindow {
     }
 
     // todo(windows)
-    fn set_edited(&mut self, edited: bool) {}
+    fn set_edited(&mut self, _edited: bool) {}
 
     // todo(windows)
     fn show_character_palette(&self) {}
@@ -1166,7 +1154,7 @@ impl PlatformWindow for WindowsWindow {
     }
 
     // todo(windows)
-    fn is_topmost_for_position(&self, position: Point<Pixels>) -> bool {
+    fn is_topmost_for_position(&self, _position: Point<Pixels>) -> bool {
         true
     }
 
@@ -1184,6 +1172,7 @@ impl PlatformWindow for WindowsWindow {
 #[implement(IDropTarget)]
 struct WindowsDragDropHandler(pub Rc<WindowsWindowInner>);
 
+#[allow(non_snake_case)]
 impl IDropTarget_Impl for WindowsDragDropHandler {
     fn DragEnter(
         &self,
@@ -1352,28 +1341,6 @@ pub(crate) fn try_get_window_inner(hwnd: HWND) -> Option<Rc<WindowsWindowInner>>
         inner.upgrade()
     } else {
         None
-    }
-}
-
-unsafe fn get_window_long(hwnd: HWND, nindex: WINDOW_LONG_PTR_INDEX) -> isize {
-    #[cfg(target_pointer_width = "64")]
-    unsafe {
-        GetWindowLongPtrW(hwnd, nindex)
-    }
-    #[cfg(target_pointer_width = "32")]
-    unsafe {
-        GetWindowLongW(hwnd, nindex) as isize
-    }
-}
-
-unsafe fn set_window_long(hwnd: HWND, nindex: WINDOW_LONG_PTR_INDEX, dwnewlong: isize) -> isize {
-    #[cfg(target_pointer_width = "64")]
-    unsafe {
-        SetWindowLongPtrW(hwnd, nindex, dwnewlong)
-    }
-    #[cfg(target_pointer_width = "32")]
-    unsafe {
-        SetWindowLongW(hwnd, nindex, dwnewlong as i32) as isize
     }
 }
 

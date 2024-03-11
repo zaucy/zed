@@ -595,6 +595,11 @@ impl<'a> WindowContext<'a> {
         style
     }
 
+    /// Get the platform window titlebar height
+    pub fn titlebar_height(&self) -> Pixels {
+        self.window.platform_window.titlebar_height()
+    }
+
     /// Dispatch the given action on the currently focused element.
     pub fn dispatch_action(&mut self, action: Box<dyn Action>) {
         let focus_handle = self.focused();
