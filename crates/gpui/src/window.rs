@@ -1,13 +1,13 @@
 use crate::{
-    px, size, transparent_black, Action, AnyDrag, AnyView, AppContext, Arena, AsyncWindowContext,
-    AvailableSpace, Bounds, Context, Corners, CursorStyle, DispatchActionListener, DispatchNodeId,
-    DispatchTree, DisplayId, Edges, Effect, Entity, EntityId, EventEmitter, FileDropEvent, Flatten,
-    Global, GlobalElementId, Hsla, KeyBinding, KeyContext, KeyDownEvent, KeyMatch, KeymatchResult,
-    Keystroke, KeystrokeEvent, Model, ModelContext, Modifiers, MouseButton, MouseMoveEvent,
-    MouseUpEvent, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformWindow, Point,
-    PromptLevel, Render, ScaledPixels, SharedString, Size, SubscriberSet, Subscription,
-    TaffyLayoutEngine, Task, View, VisualContext, WeakView, WindowAppearance, WindowBounds,
-    WindowOptions, WindowTextSystem,
+    px, size, transparent_black, Action, AnyDrag, AnyElement, AnyView, AppContext, Arena,
+    AsyncWindowContext, AvailableSpace, Bounds, Context, Corners, CursorStyle,
+    DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Element,
+    Entity, EntityId, EventEmitter, FileDropEvent, Flatten, Global, GlobalElementId, Hsla,
+    KeyBinding, KeyContext, KeyDownEvent, KeyMatch, KeymatchResult, Keystroke, KeystrokeEvent,
+    Model, ModelContext, Modifiers, MouseButton, MouseMoveEvent, MouseUpEvent, Pixels,
+    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformWindow, Point, PromptLevel, Render,
+    ScaledPixels, SharedString, Size, SubscriberSet, Subscription, TaffyLayoutEngine, Task, View,
+    VisualContext, WeakView, WindowAppearance, WindowBounds, WindowOptions, WindowTextSystem,
 };
 use anyhow::{anyhow, Context as _, Result};
 use collections::FxHashSet;
@@ -590,6 +590,11 @@ impl<'a> WindowContext<'a> {
     /// Accessor for the text system.
     pub fn text_system(&self) -> &Arc<WindowTextSystem> {
         &self.window.text_system
+    }
+
+    /// Get the platform window titlebar height
+    pub fn titlebar_height(&self) -> Pixels {
+        self.window.platform_window.titlebar_height()
     }
 
     /// Dispatch the given action on the currently focused element.

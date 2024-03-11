@@ -136,39 +136,39 @@ impl WindowsTextSystem {
         this.load_system_fonts();
 
         // @HACK: will remove, just debugging
-        let icon_font = font("Segoe Fluent Icons");
-        let icon_font_id = this.font_id(&icon_font);
-        if icon_font_id.is_err() {
-            let mut state = this.0.get_mut();
-            let face_info = state
-                .font_system
-                .db()
-                .faces()
-                .find(|face_info| match &face_info.source {
-                    cosmic_text::fontdb::Source::Binary(_) => false,
-                    cosmic_text::fontdb::Source::File(file) => {
-                        file.file_name()
-                            .unwrap()
-                            .to_string_lossy()
-                            .to_ascii_lowercase()
-                            == "segoeicons.ttf"
-                    }
-                    cosmic_text::fontdb::Source::SharedFile(file, _) => {
-                        file.file_name()
-                            .unwrap()
-                            .to_string_lossy()
-                            .to_ascii_lowercase()
-                            == "segoeicons.ttf"
-                    }
-                })
-                .unwrap();
-            let icon_font_rc = state.font_system.get_font(face_info.id).unwrap();
-            state
-                .font_selections
-                .insert(icon_font.clone(), FontId(0))
-                .unwrap();
-            state.fonts.push(icon_font_rc);
-        }
+        // let icon_font = font("Segoe Fluent Icons");
+        // let icon_font_id = this.font_id(&icon_font);
+        // if icon_font_id.is_err() {
+        //     let mut state = this.0.get_mut();
+        //     let face_info = state
+        //         .font_system
+        //         .db()
+        //         .faces()
+        //         .find(|face_info| match &face_info.source {
+        //             cosmic_text::fontdb::Source::Binary(_) => false,
+        //             cosmic_text::fontdb::Source::File(file) => {
+        //                 file.file_name()
+        //                     .unwrap()
+        //                     .to_string_lossy()
+        //                     .to_ascii_lowercase()
+        //                     == "segoeicons.ttf"
+        //             }
+        //             cosmic_text::fontdb::Source::SharedFile(file, _) => {
+        //                 file.file_name()
+        //                     .unwrap()
+        //                     .to_string_lossy()
+        //                     .to_ascii_lowercase()
+        //                     == "segoeicons.ttf"
+        //             }
+        //         })
+        //         .unwrap();
+        //     let icon_font_rc = state.font_system.get_font(face_info.id).unwrap();
+        //     state
+        //         .font_selections
+        //         .insert(icon_font.clone(), FontId(0))
+        //         .unwrap();
+        //     state.fonts.push(icon_font_rc);
+        // }
 
         this
     }
