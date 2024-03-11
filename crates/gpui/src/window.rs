@@ -597,6 +597,11 @@ impl<'a> WindowContext<'a> {
         self.window.platform_window.titlebar_height()
     }
 
+    /// Get the platform window titlebar top padding
+    pub fn titlebar_top_padding(&self) -> Pixels {
+        self.window.platform_window.titlebar_top_padding()
+    }
+
     /// Dispatch the given action on the currently focused element.
     pub fn dispatch_action(&mut self, action: Box<dyn Action>) {
         let focus_handle = self.focused();
