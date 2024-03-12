@@ -50,7 +50,7 @@ impl PlatformTitlebar {
         };
 
         fn windows_caption_btn(icon_text: &'static str, hover_color: Rgba) -> Div {
-            let mut active_color = hover_color.clone();
+            let mut active_color = hover_color;
             active_color.a *= 0.2;
             div()
                 .h_full()
@@ -65,6 +65,24 @@ impl PlatformTitlebar {
                 .child(icon_text)
         }
 
+        let minimize = if cfg!(target_os = "windows") {
+            "\u{e921}"
+        } else { // } if cfg!(target_os = "linux") {
+            "\u{2212}"
+        };
+
+        let maximize = if cfg!(target_os = "windows") {
+            "\u{e922}"
+        } else { // if cfg!(target_os = "linux") {
+            "\u{2610}"
+        };
+
+        let close = if cfg!(target_os = "windows") {
+            "\u{e8bb}"
+        } else { // if cfg!(target_os = "linux") {
+            "\u{2716}"
+        };
+
         div()
             .id("caption-buttons-windows")
             .flex()
@@ -76,9 +94,9 @@ impl PlatformTitlebar {
             .font("Segoe Fluent Icons")
             .text_size(gpui::Pixels(10.0))
             .children(vec![
-                windows_caption_btn("\u{e921}", btn_hover_color), // minimize
-                windows_caption_btn("\u{e922}", btn_hover_color), // maximize
-                windows_caption_btn("\u{e8bb}", close_btn_hover_color), // close
+                windows_caption_btn(minimize, btn_hover_color), // minimize
+                windows_caption_btn(maximize, btn_hover_color), // maximize
+                windows_caption_btn(close, close_btn_hover_color), // close
             ])
     }
 
@@ -136,7 +154,7 @@ impl RenderOnce for PlatformTitlebar {
                     .children(self.children),
             )
             .map(|this| {
-                if cfg!(target_os = "windows") {
+                if cfg!(target_os = "windows") || cfg!(target_os = "linux") {
                     this.child(PlatformTitlebar::render_caption_buttons(cx))
                 } else {
                     this

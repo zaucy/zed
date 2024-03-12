@@ -310,9 +310,9 @@ impl PlatformWindow for WaylandWindow {
         0.0.into()
     }
 
-    // todo(linux)
+    // todo(linux) make configurable with min/max
     fn titlebar_height(&self) -> Pixels {
-        unimplemented!()
+        32.0.into()
     }
 
     // todo(linux)
