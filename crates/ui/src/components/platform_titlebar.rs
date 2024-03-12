@@ -1,15 +1,15 @@
 use gpui::{
     div,
     prelude::FluentBuilder,
-    px, AnyElement, Div, Element, Fill, Hsla, InteractiveElement, IntoElement, ParentElement,
-    RenderOnce, Rgba, StyleRefinement, Styled,
+    px, AnyElement, Div, Element, Fill, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    Rgba, StyleRefinement, Styled,
     WindowAppearance::{Dark, Light, VibrantDark, VibrantLight},
     WindowBounds, WindowContext,
 };
 use smallvec::SmallVec;
 use std::ops::Not;
 
-use crate::{h_flex, ButtonLike};
+use crate::h_flex;
 
 #[derive(IntoElement)]
 pub struct PlatformTitlebar {
