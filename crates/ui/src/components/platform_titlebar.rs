@@ -1,7 +1,3 @@
-use std::ops::Not;
-
-use smallvec::SmallVec;
-
 use gpui::{
     div,
     prelude::FluentBuilder,
@@ -10,6 +6,8 @@ use gpui::{
     WindowAppearance::{Dark, Light, VibrantDark, VibrantLight},
     WindowBounds, WindowContext,
 };
+use smallvec::SmallVec;
+use std::ops::Not;
 
 use crate::{h_flex, ButtonLike};
 
