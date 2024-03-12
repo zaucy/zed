@@ -131,6 +131,10 @@ impl PlatformWindow for TestWindow {
         2.0
     }
 
+    fn titlebar_top_padding(&self) -> Pixels {
+        0.0.into()
+    }
+
     fn titlebar_height(&self) -> Pixels {
         unimplemented!()
     }
