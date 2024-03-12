@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use uuid::Uuid;
 use windows::{
     core::PCSTR,
