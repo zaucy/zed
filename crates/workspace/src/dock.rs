@@ -4,8 +4,8 @@ use crate::{status_bar::StatusItemView, Workspace};
 use gpui::{
     div, px, Action, AnchorCorner, AnyView, AppContext, Axis, ClickEvent, Entity, EntityId,
     EventEmitter, FocusHandle, FocusableView, IntoElement, KeyContext, MouseButton, ParentElement,
-    Render, SharedString, Styled, Subscription, View, ViewContext, VisualContext, WeakView,
-    WindowContext,
+    Render, SharedString, StyleRefinement, Styled, Subscription, View, ViewContext, VisualContext,
+    WeakView, WindowContext,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -221,7 +221,7 @@ impl Dock {
                     return;
                 };
                 if panel.is_zoomed(cx) {
-                    workspace.zoomed = Some(panel.to_any().downgrade().into());
+                    workspace.zoomed = Some(panel.to_any().downgrade());
                     workspace.zoomed_position = Some(position);
                 } else {
                     workspace.zoomed = None;
@@ -522,7 +522,7 @@ impl Dock {
 
     pub fn resize_active_panel(&mut self, size: Option<Pixels>, cx: &mut ViewContext<Self>) {
         if let Some(entry) = self.panel_entries.get_mut(self.active_panel_index) {
-            let size = size.map(|size| size.max(RESIZE_HANDLE_SIZE));
+            let size = size.map(|size| size.max(RESIZE_HANDLE_SIZE).round());
             entry.panel.set_size(size, cx);
             cx.notify();
         }
@@ -563,8 +563,7 @@ impl Render for Dock {
                         cx.stop_propagation();
                     }
                 }))
-                .z_index(1)
-                .block_mouse();
+                .occlude();
 
             match self.position() {
                 DockPosition::Left => {
@@ -618,7 +617,12 @@ impl Render for Dock {
                             Axis::Horizontal => this.min_w(size).h_full(),
                             Axis::Vertical => this.min_h(size).w_full(),
                         })
-                        .child(entry.panel.to_any().cached()),
+                        .child(
+                            entry
+                                .panel
+                                .to_any()
+                                .cached(StyleRefinement::default().v_flex().size_full()),
+                        ),
                 )
                 .child(handle)
         } else {

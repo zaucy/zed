@@ -140,6 +140,15 @@
     // Whether to show diagnostic indicators in the scrollbar.
     "diagnostics": true
   },
+  // What to do when multibuffer is double clicked in some of its excerpts
+  // (parts of singleton buffers).
+  // May take 2 values:
+  //  1. Behave as a regular buffer and select the whole word.
+  //         "double_click_in_multibuffer": "select"
+  //  2. Open the excerpt clicked as a new buffer in the new tab (default).
+  //         "double_click_in_multibuffer": "open",
+  // For the case of "open", regular selection behavior can be achieved by holding `alt` when double clicking.
+  "double_click_in_multibuffer": "open",
   "gutter": {
     // Whether to show line numbers in the gutter.
     "line_numbers": true,
@@ -211,6 +220,11 @@
     // Default width of the channels panel.
     "default_width": 240
   },
+  "message_editor": {
+    // Whether to automatically replace emoji shortcodes with emoji characters.
+    // For example: typing `:wave:` gets replaced with `👋`.
+    "auto_replace_emoji_shortcode": true
+  },
   "notification_panel": {
     // Whether to show the collaboration panel button in the status bar.
     "button": true,
@@ -228,15 +242,29 @@
     "default_width": 640,
     // Default height when the assistant is docked to the bottom.
     "default_height": 320,
+    // Deprecated: Please use `provider.api_url` instead.
     // The default OpenAI API endpoint to use when starting new conversations.
     "openai_api_url": "https://api.openai.com/v1",
+    // Deprecated: Please use `provider.default_model` instead.
     // The default OpenAI model to use when starting new conversations. This
     // setting can take three values:
     //
     // 1. "gpt-3.5-turbo-0613""
     // 2. "gpt-4-0613""
     // 3. "gpt-4-1106-preview"
-    "default_open_ai_model": "gpt-4-1106-preview"
+    "default_open_ai_model": "gpt-4-1106-preview",
+    "provider": {
+      "type": "openai",
+      // The default OpenAI API endpoint to use when starting new conversations.
+      "api_url": "https://api.openai.com/v1",
+      // The default OpenAI model to use when starting new conversations. This
+      // setting can take three values:
+      //
+      // 1. "gpt-3.5-turbo-0613""
+      // 2. "gpt-4-0613""
+      // 3. "gpt-4-1106-preview"
+      "default_model": "gpt-4-1106-preview"
+    }
   },
   // Whether the screen sharing icon is shown in the os status bar.
   "show_call_status_icon": true,
@@ -458,6 +486,10 @@
         // Can also be 'csh', 'fish', and `nushell`
         "activate_script": "default"
       }
+    },
+    "toolbar": {
+      // Whether to display the terminal title in its toolbar.
+      "title": true
     }
     // Set the terminal's font size. If this option is not included,
     // the terminal will default to matching the buffer's font size.
@@ -572,7 +604,8 @@
   // Vim settings
   "vim": {
     "use_system_clipboard": "always",
-    "use_multiline_find": false
+    "use_multiline_find": false,
+    "use_smartcase_find": false
   },
   // The server to connect to. If the environment variable
   // ZED_SERVER_URL is set, it will override this setting.

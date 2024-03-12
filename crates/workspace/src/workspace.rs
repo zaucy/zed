@@ -15,7 +15,7 @@ use anyhow::{anyhow, Context as _, Result};
 use call::{call_settings::CallSettings, ActiveCall};
 use client::{
     proto::{self, ErrorCode, PeerId},
-    ChannelId, Client, ErrorExt, Status, TypedEnvelope, UserStore,
+    ChannelId, Client, ErrorExt, ProjectId, Status, TypedEnvelope, UserStore,
 };
 use collections::{hash_map, HashMap, HashSet};
 use derive_more::{Deref, DerefMut};
@@ -106,6 +106,7 @@ actions!(
         AddFolderToProject,
         Unfollow,
         SaveAs,
+        SaveWithoutFormat,
         ReloadActiveItem,
         ActivatePreviousPane,
         ActivateNextPane,
@@ -223,7 +224,7 @@ impl Clone for Toast {
     fn clone(&self) -> Self {
         Toast {
             id: self.id,
-            msg: self.msg.to_owned(),
+            msg: self.msg.clone(),
             on_click: self.on_click.clone(),
         }
     }
@@ -261,7 +262,7 @@ pub fn init(app_state: Arc<AppState>, cx: &mut AppContext) {
                 cx.spawn(move |cx| async move {
                     if let Some(paths) = paths.await.log_err().flatten() {
                         cx.update(|cx| {
-                            open_paths(&paths, &app_state, None, cx).detach_and_log_err(cx)
+                            open_paths(&paths, app_state, None, cx).detach_and_log_err(cx)
                         })
                         .ok();
                     }
@@ -679,8 +680,7 @@ impl Workspace {
         let mut active_call = None;
         if let Some(call) = ActiveCall::try_global(cx) {
             let call = call.clone();
-            let mut subscriptions = Vec::new();
-            subscriptions.push(cx.subscribe(&call, Self::on_active_call_event));
+            let subscriptions = vec![cx.subscribe(&call, Self::on_active_call_event)];
             active_call = Some((call, subscriptions));
         }
 
@@ -871,7 +871,6 @@ impl Workspace {
 
                 cx.open_window(options, {
                     let app_state = app_state.clone();
-                    let workspace_id = workspace_id.clone();
                     let project_handle = project_handle.clone();
                     move |cx| {
                         cx.new_view(|cx| {
@@ -1109,7 +1108,7 @@ impl Workspace {
         )
     }
 
-    pub fn client(&self) -> &Client {
+    pub fn client(&self) -> &Arc<Client> {
         &self.app_state.client
     }
 
@@ -1244,11 +1243,10 @@ impl Workspace {
                 }
             }
 
-            Ok(this
-                .update(&mut cx, |this, cx| {
-                    this.save_all_internal(SaveIntent::Close, cx)
-                })?
-                .await?)
+            this.update(&mut cx, |this, cx| {
+                this.save_all_internal(SaveIntent::Close, cx)
+            })?
+            .await
         })
     }
 
@@ -1260,7 +1258,7 @@ impl Workspace {
     fn send_keystrokes(&mut self, action: &SendKeystrokes, cx: &mut ViewContext<Self>) {
         let mut keystrokes: Vec<Keystroke> = action
             .0
-            .split(" ")
+            .split(' ')
             .flat_map(|k| Keystroke::parse(k).log_err())
             .collect();
         keystrokes.reverse();
@@ -1416,7 +1414,7 @@ impl Workspace {
         let app_state = self.app_state.clone();
 
         cx.spawn(|_, mut cx| async move {
-            cx.update(|cx| open_paths(&paths, &app_state, window_to_replace, cx))?
+            cx.update(|cx| open_paths(&paths, app_state, window_to_replace, cx))?
                 .await?;
             Ok(())
         })
@@ -1628,8 +1626,11 @@ impl Workspace {
         action: &CloseInactiveTabsAndPanes,
         cx: &mut ViewContext<Self>,
     ) {
-        self.close_all_internal(true, action.save_intent.unwrap_or(SaveIntent::Close), cx)
-            .map(|task| task.detach_and_log_err(cx));
+        if let Some(task) =
+            self.close_all_internal(true, action.save_intent.unwrap_or(SaveIntent::Close), cx)
+        {
+            task.detach_and_log_err(cx)
+        }
     }
 
     pub fn close_all_items_and_panes(
@@ -1637,8 +1638,11 @@ impl Workspace {
         action: &CloseAllItemsAndPanes,
         cx: &mut ViewContext<Self>,
     ) {
-        self.close_all_internal(false, action.save_intent.unwrap_or(SaveIntent::Close), cx)
-            .map(|task| task.detach_and_log_err(cx));
+        if let Some(task) =
+            self.close_all_internal(false, action.save_intent.unwrap_or(SaveIntent::Close), cx)
+        {
+            task.detach_and_log_err(cx)
+        }
     }
 
     fn close_all_internal(
@@ -2600,8 +2604,9 @@ impl Workspace {
         if Some(leader_id) == self.unfollow(&pane, cx) {
             return;
         }
-        self.start_following(leader_id, cx)
-            .map(|task| task.detach_and_log_err(cx));
+        if let Some(task) = self.start_following(leader_id, cx) {
+            task.detach_and_log_err(cx)
+        }
     }
 
     pub fn follow(&mut self, leader_id: PeerId, cx: &mut ViewContext<Self>) {
@@ -2630,7 +2635,7 @@ impl Workspace {
         // if they are active in another project, follow there.
         if let Some(project_id) = other_project_id {
             let app_state = self.app_state.clone();
-            crate::join_remote_project(project_id, remote_participant.user.id, app_state, cx)
+            crate::join_in_room_project(project_id, remote_participant.user.id, app_state, cx)
                 .detach_and_log_err(cx);
         }
 
@@ -2643,8 +2648,9 @@ impl Workspace {
         }
 
         // Otherwise, follow.
-        self.start_following(leader_id, cx)
-            .map(|task| task.detach_and_log_err(cx));
+        if let Some(task) = self.start_following(leader_id, cx) {
+            task.detach_and_log_err(cx)
+        }
     }
 
     pub fn unfollow(&mut self, pane: &View<Pane>, cx: &mut ViewContext<Self>) -> Option<PeerId> {
@@ -2750,7 +2756,6 @@ impl Workspace {
             Some(
                 div()
                     .absolute()
-                    .z_index(100)
                     .right_3()
                     .bottom_3()
                     .w_112()
@@ -2955,7 +2960,7 @@ impl Workspace {
         })?;
 
         let Some(id) = view.id.clone() else {
-            return Err(anyhow!("no id for view")).into();
+            return Err(anyhow!("no id for view"));
         };
         let id = ViewId::from_proto(id)?;
 
@@ -3355,7 +3360,7 @@ impl Workspace {
             let left_visible = left_dock.is_open();
             let left_active_panel = left_dock
                 .visible_panel()
-                .and_then(|panel| Some(panel.persistent_name().to_string()));
+                .map(|panel| panel.persistent_name().to_string());
             let left_dock_zoom = left_dock
                 .visible_panel()
                 .map(|panel| panel.is_zoomed(cx))
@@ -3365,7 +3370,7 @@ impl Workspace {
             let right_visible = right_dock.is_open();
             let right_active_panel = right_dock
                 .visible_panel()
-                .and_then(|panel| Some(panel.persistent_name().to_string()));
+                .map(|panel| panel.persistent_name().to_string());
             let right_dock_zoom = right_dock
                 .visible_panel()
                 .map(|panel| panel.is_zoomed(cx))
@@ -3375,7 +3380,7 @@ impl Workspace {
             let bottom_visible = bottom_dock.is_open();
             let bottom_active_panel = bottom_dock
                 .visible_panel()
-                .and_then(|panel| Some(panel.persistent_name().to_string()));
+                .map(|panel| panel.persistent_name().to_string());
             let bottom_dock_zoom = bottom_dock
                 .visible_panel()
                 .map(|panel| panel.is_zoomed(cx))
@@ -3525,6 +3530,11 @@ impl Workspace {
             .on_action(cx.listener(|workspace, action: &Save, cx| {
                 workspace
                     .save_active_item(action.save_intent.unwrap_or(SaveIntent::Save), cx)
+                    .detach_and_log_err(cx);
+            }))
+            .on_action(cx.listener(|workspace, _: &SaveWithoutFormat, cx| {
+                workspace
+                    .save_active_item(SaveIntent::SaveWithoutFormat, cx)
                     .detach_and_log_err(cx);
             }))
             .on_action(cx.listener(|workspace, _: &SaveAs, cx| {
@@ -3713,7 +3723,7 @@ fn open_items(
             project_paths_to_open
                 .into_iter()
                 .enumerate()
-                .map(|(i, (abs_path, project_path))| {
+                .map(|(ix, (abs_path, project_path))| {
                     let workspace = workspace.clone();
                     cx.spawn(|mut cx| {
                         let fs = app_state.fs.clone();
@@ -3721,7 +3731,7 @@ fn open_items(
                             let file_project_path = project_path?;
                             if fs.is_file(&abs_path).await {
                                 Some((
-                                    i,
+                                    ix,
                                     workspace
                                         .update(&mut cx, |workspace, cx| {
                                             workspace.open_path(file_project_path, None, true, cx)
@@ -3738,11 +3748,9 @@ fn open_items(
 
         let tasks = tasks.collect::<Vec<_>>();
 
-        let tasks = futures::future::join_all(tasks.into_iter());
-        for maybe_opened_path in tasks.await.into_iter() {
-            if let Some((i, path_open_result)) = maybe_opened_path {
-                opened_items[i] = Some(path_open_result);
-            }
+        let tasks = futures::future::join_all(tasks);
+        for (ix, path_open_result) in tasks.await.into_iter().flatten() {
+            opened_items[ix] = Some(path_open_result);
         }
 
         Ok(opened_items)
@@ -3790,7 +3798,7 @@ impl Render for Workspace {
             let theme_settings = ThemeSettings::get_global(cx);
             (
                 theme_settings.ui_font.family.clone(),
-                theme_settings.ui_font_size.clone(),
+                theme_settings.ui_font_size,
             )
         };
 
@@ -3810,8 +3818,6 @@ impl Render for Workspace {
             .items_start()
             .text_color(colors.text)
             .bg(colors.background)
-            .border()
-            .border_color(colors.border)
             .children(self.titlebar_item.clone())
             .child(
                 div()
@@ -3825,18 +3831,15 @@ impl Render for Workspace {
                     .border_t()
                     .border_b()
                     .border_color(colors.border)
-                    .child(
-                        canvas({
-                            let this = cx.view().clone();
-                            move |bounds, cx| {
-                                this.update(cx, |this, _cx| {
-                                    this.bounds = *bounds;
-                                })
-                            }
-                        })
+                    .child({
+                        let this = cx.view().clone();
+                        canvas(
+                            move |bounds, cx| this.update(cx, |this, _cx| this.bounds = bounds),
+                            |_, _, _| {},
+                        )
                         .absolute()
-                        .size_full(),
-                    )
+                        .size_full()
+                    })
                     .on_drag_move(
                         cx.listener(|workspace, e: &DragMoveEvent<DraggedDock>, cx| {
                             match e.drag(cx).0 {
@@ -3861,7 +3864,6 @@ impl Render for Workspace {
                             }
                         }),
                     )
-                    .child(self.modal_layer.clone())
                     .child(
                         div()
                             .flex()
@@ -3910,11 +3912,10 @@ impl Render for Workspace {
                                 },
                             )),
                     )
-                    .children(self.render_notifications(cx))
                     .children(self.zoomed.as_ref().and_then(|view| {
                         let zoomed_view = view.upgrade()?;
                         let div = div()
-                            .z_index(1)
+                            .occlude()
                             .absolute()
                             .overflow_hidden()
                             .border_color(colors.border)
@@ -3929,7 +3930,9 @@ impl Render for Workspace {
                             Some(DockPosition::Bottom) => div.top_2().border_t(),
                             None => div.top_2().bottom_2().left_2().right_2().border(),
                         })
-                    })),
+                    }))
+                    .child(self.modal_layer.clone())
+                    .children(self.render_notifications(cx)),
             )
             .child(self.status_bar.clone())
             .children(if self.project.read(cx).is_disconnected() {
@@ -4149,7 +4152,7 @@ async fn join_channel_internal(
     if let Some(room) = open_room {
         let task = room.update(cx, |room, cx| {
             if let Some((project, host)) = room.most_active_project(cx) {
-                return Some(join_remote_project(project, host, app_state.clone(), cx));
+                return Some(join_in_room_project(project, host, app_state.clone(), cx));
             }
 
             None
@@ -4220,7 +4223,7 @@ async fn join_channel_internal(
 
     let task = room.update(cx, |room, cx| {
         if let Some((project, host)) = room.most_active_project(cx) {
-            return Some(join_remote_project(project, host, app_state.clone(), cx));
+            return Some(join_in_room_project(project, host, app_state.clone(), cx));
         }
 
         // if you are the first to join a channel, share your project
@@ -4374,7 +4377,7 @@ fn activate_any_workspace_window(cx: &mut AsyncAppContext) -> Option<WindowHandl
 #[allow(clippy::type_complexity)]
 pub fn open_paths(
     abs_paths: &[PathBuf],
-    app_state: &Arc<AppState>,
+    app_state: Arc<AppState>,
     requesting_window: Option<WindowHandle<Workspace>>,
     cx: &mut AppContext,
 ) -> Task<
@@ -4383,7 +4386,6 @@ pub fn open_paths(
         Vec<Option<Result<Box<dyn ItemHandle>, anyhow::Error>>>,
     )>,
 > {
-    let app_state = app_state.clone();
     let abs_paths = abs_paths.to_vec();
     // Open paths in existing workspace if possible
     let existing = activate_workspace_for_project(cx, {
@@ -4393,7 +4395,7 @@ pub fn open_paths(
     cx.spawn(move |mut cx| async move {
         if let Some(existing) = existing {
             Ok((
-                existing.clone(),
+                existing,
                 existing
                     .update(&mut cx, |workspace, cx| {
                         workspace.open_paths(abs_paths, OpenVisible::All, None, cx)
@@ -4410,11 +4412,11 @@ pub fn open_paths(
 }
 
 pub fn open_new(
-    app_state: &Arc<AppState>,
+    app_state: Arc<AppState>,
     cx: &mut AppContext,
     init: impl FnOnce(&mut Workspace, &mut ViewContext<Workspace>) + 'static + Send,
 ) -> Task<()> {
-    let task = Workspace::new_local(Vec::new(), app_state.clone(), None, cx);
+    let task = Workspace::new_local(Vec::new(), app_state, None, cx);
     cx.spawn(|mut cx| async move {
         if let Some((workspace, opened_paths)) = task.await.log_err() {
             workspace
@@ -4455,7 +4457,56 @@ pub fn create_and_open_local_file(
     })
 }
 
-pub fn join_remote_project(
+pub fn join_hosted_project(
+    hosted_project_id: ProjectId,
+    app_state: Arc<AppState>,
+    cx: &mut AppContext,
+) -> Task<Result<()>> {
+    cx.spawn(|mut cx| async move {
+        let existing_window = cx.update(|cx| {
+            cx.windows().into_iter().find_map(|window| {
+                let workspace = window.downcast::<Workspace>()?;
+                workspace
+                    .read(cx)
+                    .is_ok_and(|workspace| {
+                        workspace.project().read(cx).hosted_project_id() == Some(hosted_project_id)
+                    })
+                    .then(|| workspace)
+            })
+        })?;
+
+        let workspace = if let Some(existing_window) = existing_window {
+            existing_window
+        } else {
+            let project = Project::hosted(
+                hosted_project_id,
+                app_state.user_store.clone(),
+                app_state.client.clone(),
+                app_state.languages.clone(),
+                app_state.fs.clone(),
+                cx.clone(),
+            )
+            .await?;
+
+            let window_bounds_override = window_bounds_env_override(&cx);
+            cx.update(|cx| {
+                let options = (app_state.build_window_options)(window_bounds_override, None, cx);
+                cx.open_window(options, |cx| {
+                    cx.new_view(|cx| Workspace::new(0, project, app_state.clone(), cx))
+                })
+            })?
+        };
+
+        workspace.update(&mut cx, |_, cx| {
+            cx.activate(true);
+            cx.activate_window();
+        })?;
+
+        Ok(())
+    })
+}
+
+pub fn join_in_room_project(
     project_id: u64,
     follow_user_id: u64,
     app_state: Arc<AppState>,
@@ -4600,27 +4651,20 @@ fn parse_pixel_size_env_var(value: &str) -> Option<Size<GlobalPixels>> {
     Some(size((width as f64).into(), (height as f64).into()))
 }
 
-pub fn titlebar_height(cx: &mut WindowContext) -> Pixels {
-    (1.75 * cx.rem_size()).max(px(32.))
-}
-
 struct DisconnectedOverlay;
 
 impl Element for DisconnectedOverlay {
-    type State = AnyElement;
+    type BeforeLayout = AnyElement;
+    type AfterLayout = ();
 
-    fn request_layout(
-        &mut self,
-        _: Option<Self::State>,
-        cx: &mut ElementContext,
-    ) -> (LayoutId, Self::State) {
+    fn before_layout(&mut self, cx: &mut ElementContext) -> (LayoutId, Self::BeforeLayout) {
         let mut background = cx.theme().colors().elevated_surface_background;
         background.fade_out(0.2);
         let mut overlay = div()
             .bg(background)
             .absolute()
             .left_0()
-            .top(titlebar_height(cx))
+            .top(cx.titlebar_height())
             .size_full()
             .flex()
             .items_center()
@@ -4631,28 +4675,32 @@ impl Element for DisconnectedOverlay {
                 "Your connection to the remote project has been lost.",
             ))
             .into_any();
-        (overlay.request_layout(cx), overlay)
+        (overlay.before_layout(cx), overlay)
+    }
+
+    fn after_layout(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        overlay: &mut Self::BeforeLayout,
+        cx: &mut ElementContext,
+    ) {
+        cx.insert_hitbox(bounds, true);
+        overlay.after_layout(cx);
     }
 
     fn paint(
         &mut self,
-        bounds: Bounds<Pixels>,
-        overlay: &mut Self::State,
+        _: Bounds<Pixels>,
+        overlay: &mut Self::BeforeLayout,
+        _: &mut Self::AfterLayout,
         cx: &mut ElementContext,
     ) {
-        cx.with_z_index(u16::MAX, |cx| {
-            cx.add_opaque_layer(bounds);
-            overlay.paint(cx);
-        })
+        overlay.paint(cx)
     }
 }
 
 impl IntoElement for DisconnectedOverlay {
     type Element = Self;
-
-    fn element_id(&self) -> Option<ui::prelude::ElementId> {
-        None
-    }
 
     fn into_element(self) -> Self::Element {
         self
@@ -5489,7 +5537,7 @@ mod tests {
         workspace.update(cx, |workspace, cx| {
             // Since panel_2 was not visible on the right, we don't open the left dock.
             assert!(!workspace.left_dock().read(cx).is_open());
-            // And the right dock is unaffected in it's displaying of panel_1
+            // And the right dock is unaffected in its displaying of panel_1
             assert!(workspace.right_dock().read(cx).is_open());
             assert_eq!(
                 workspace

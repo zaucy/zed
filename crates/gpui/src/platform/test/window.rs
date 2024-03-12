@@ -131,6 +131,10 @@ impl PlatformWindow for TestWindow {
         2.0
     }
 
+    fn titlebar_top_padding(&self) -> Pixels {
+        0.0.into()
+    }
+
     fn titlebar_height(&self) -> Pixels {
         unimplemented!()
     }
@@ -169,13 +173,15 @@ impl PlatformWindow for TestWindow {
         _msg: &str,
         _detail: Option<&str>,
         _answers: &[&str],
-    ) -> futures::channel::oneshot::Receiver<usize> {
-        self.0
-            .lock()
-            .platform
-            .upgrade()
-            .expect("platform dropped")
-            .prompt()
+    ) -> Option<futures::channel::oneshot::Receiver<usize>> {
+        Some(
+            self.0
+                .lock()
+                .platform
+                .upgrade()
+                .expect("platform dropped")
+                .prompt(),
+        )
     }
 
     fn activate(&self) {
