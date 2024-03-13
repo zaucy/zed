@@ -2942,17 +2942,8 @@ impl Element for EditorElement {
                 let font_id = cx.text_system().resolve_font(&style.text.font());
                 let font_size = style.text.font_size.to_pixels(cx.rem_size());
                 let line_height = style.text.line_height_in_pixels(cx.rem_size());
-                let em_width = cx
-                    .text_system()
-                    .typographic_bounds(font_id, font_size, 'm')
-                    .unwrap()
-                    .size
-                    .width;
-                let em_advance = cx
-                    .text_system()
-                    .advance(font_id, font_size, 'm')
-                    .unwrap()
-                    .width;
+                let em_width = cx.text_system().em_bounds(font_id, font_size).size.width;
+                let em_advance = cx.text_system().em_advance(font_id, font_size).width;
 
                 let gutter_dimensions = snapshot.gutter_dimensions(
                     font_id,
@@ -4339,12 +4330,7 @@ fn compute_auto_height_layout(
     let font_id = cx.text_system().resolve_font(&style.text.font());
     let font_size = style.text.font_size.to_pixels(cx.rem_size());
     let line_height = style.text.line_height_in_pixels(cx.rem_size());
-    let em_width = cx
-        .text_system()
-        .typographic_bounds(font_id, font_size, 'm')
-        .unwrap()
-        .size
-        .width;
+    let em_width = cx.text_system().em_bounds(font_id, font_size).size.width;
 
     let mut snapshot = editor.snapshot(cx);
     let gutter_dimensions =

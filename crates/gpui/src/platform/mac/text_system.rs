@@ -233,9 +233,7 @@ impl MacTextSystemState {
             let mut font = font.load()?;
 
             open_type::apply_features(&mut font, features);
-            let Some(_) = font.glyph_for_char('m') else {
-                continue;
-            };
+
             // We've seen a number of panics in production caused by calling font.properties()
             // which unwraps a downcast to CFNumber. This is an attempt to avoid the panic,
             // and to try and identify the incalcitrant font.

@@ -169,6 +169,11 @@ impl TextSystem {
         }))
     }
 
+    /// Get the 'em' bounding box for the given font and size.
+    pub fn em_bounds(&self, font_id: FontId, font_size: Pixels) -> Bounds<Pixels> {
+        self.read_metrics(font_id, |metrics| metrics.bounding_box(font_size))
+    }
+
     /// Get the advance width for the given character, in the given font and size.
     pub fn advance(&self, font_id: FontId, font_size: Pixels, ch: char) -> Result<Size<Pixels>> {
         let glyph_id = self
@@ -179,6 +184,17 @@ impl TextSystem {
             / self.units_per_em(font_id) as f32;
 
         Ok(result * font_size)
+    }
+
+    /// Get the advance width for a character with 'em' width, in the given font and size.
+    pub fn em_advance(&self, font_id: FontId, font_size: Pixels) -> Size<Pixels> {
+        self.read_metrics(font_id, |metrics| {
+            let size = Pixels((metrics.bounding_box.size.width as f32) * font_size.0);
+            Size {
+                width: size,
+                height: size,
+            }
+        })
     }
 
     /// Get the number of font size units per 'em square',

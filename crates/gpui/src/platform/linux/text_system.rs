@@ -229,11 +229,6 @@ impl LinuxTextSystemState {
             .get_font_matches(Attrs::new().family(cosmic_text::Family::Name(name)));
         for font in family.as_ref() {
             let font = self.font_system.get_font(*font).unwrap();
-            if font.as_swash().charmap().map('m') == 0 {
-                self.font_system.db_mut().remove_face(font.id());
-                continue;
-            };
-
             let font_id = FontId(self.fonts.len());
             font_ids.push(font_id);
             self.fonts.push(font);
