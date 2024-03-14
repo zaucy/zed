@@ -41,9 +41,9 @@ use windows::{
             },
             HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi},
             Input::KeyboardAndMouse::{
-                GetKeyState, VIRTUAL_KEY, VK_0, VK_A, VK_BACK, VK_CONTROL, VK_DOWN, VK_END,
-                VK_ESCAPE, VK_F1, VK_F24, VK_HOME, VK_INSERT, VK_LEFT, VK_LWIN, VK_MENU, VK_NEXT,
-                VK_PRIOR, VK_RETURN, VK_RIGHT, VK_RWIN, VK_SHIFT, VK_TAB, VK_UP,
+                GetKeyState, SetFocus, VIRTUAL_KEY, VK_0, VK_A, VK_BACK, VK_CONTROL, VK_DOWN,
+                VK_END, VK_ESCAPE, VK_F1, VK_F24, VK_HOME, VK_INSERT, VK_LEFT, VK_LWIN, VK_MENU,
+                VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_RWIN, VK_SHIFT, VK_TAB, VK_UP,
             },
             Shell::{DragQueryFileW, HDROP},
             WindowsAndMessaging::*,
@@ -69,7 +69,7 @@ pub(crate) struct WindowsWindowInner {
     renderer: RefCell<BladeRenderer>,
     callbacks: RefCell<Callbacks>,
     platform_inner: Rc<WindowsPlatformInner>,
-    handle: AnyWindowHandle,
+    pub(crate) handle: AnyWindowHandle,
     scale_factor: f32,
 }
 
@@ -199,6 +199,7 @@ impl WindowsWindowInner {
         log::debug!("msg: {msg}, wparam: {}, lparam: {}", wparam.0, lparam.0);
         match msg {
             WM_ACTIVATE => self.handle_activate_msg(msg, wparam, lparam),
+            WM_SETFOCUS => self.handle_set_focus_msg(msg, wparam, lparam),
             WM_CREATE => self.handle_create_msg(lparam),
             WM_MOVE => self.handle_move_msg(lparam),
             WM_SIZE => self.handle_size_msg(lparam),
@@ -894,6 +895,28 @@ impl WindowsWindowInner {
 
         unsafe { DefWindowProcW(self.hwnd, msg, wparam, lparam) }
     }
+
+    fn handle_set_focus_msg(&self, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+        // wparam is the window that just lost focus (may be null)
+        // SEE: https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-setfocus
+        let lost_focus_hwnd = HWND(wparam.0 as isize);
+        if let Some(lost_focus_window) = try_get_window_inner(lost_focus_hwnd) {
+            lost_focus_window
+                .callbacks
+                .borrow_mut()
+                .active_status_change
+                .as_mut()
+                .map(|mut cb| cb(false));
+        }
+
+        self.callbacks
+            .borrow_mut()
+            .active_status_change
+            .as_mut()
+            .map(|mut cb| cb(true));
+
+        LRESULT(0)
+    }
 }
 
 #[derive(Default)]
@@ -1166,6 +1189,7 @@ impl PlatformWindow for WindowsWindow {
 
     fn activate(&self) {
         unsafe { ShowWindowAsync(self.inner.hwnd, SW_NORMAL) };
+        unsafe { SetFocus(self.inner.hwnd) };
     }
 
     // todo(windows)
@@ -1424,6 +1448,10 @@ unsafe extern "system" fn wnd_proc(
 }
 
 pub(crate) fn try_get_window_inner(hwnd: HWND) -> Option<Rc<WindowsWindowInner>> {
+    if hwnd.0 == 0 {
+        return None;
+    }
+
     let ptr = unsafe { get_window_long(hwnd, GWLP_USERDATA) } as *mut Weak<WindowsWindowInner>;
     if !ptr.is_null() {
         let inner = unsafe { &*ptr };

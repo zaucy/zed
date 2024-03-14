@@ -36,7 +36,7 @@ use windows::{
             Time::{GetTimeZoneInformation, TIME_ZONE_ID_INVALID},
         },
         UI::{
-            Input::KeyboardAndMouse::GetDoubleClickTime,
+            Input::KeyboardAndMouse::{GetActiveWindow, GetDoubleClickTime},
             Shell::{
                 FileOpenDialog, FileSaveDialog, IFileOpenDialog, IFileSaveDialog, IShellItem,
                 SHCreateItemFromParsingName, ShellExecuteW, FILEOPENDIALOGOPTIONS,
@@ -54,10 +54,10 @@ use windows::{
 };
 
 use crate::{
-    Action, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor,
-    Keymap, Menu, PathPromptOptions, Platform, PlatformDisplay, PlatformInput, PlatformTextSystem,
-    PlatformWindow, Task, WindowAppearance, WindowParams, WindowsDispatcher, WindowsDisplay,
-    WindowsTextSystem, WindowsWindow,
+    try_get_window_inner, Action, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle,
+    ForegroundExecutor, Keymap, Menu, PathPromptOptions, Platform, PlatformDisplay, PlatformInput,
+    PlatformTextSystem, PlatformWindow, Task, WindowAppearance, WindowParams, WindowsDispatcher,
+    WindowsDisplay, WindowsTextSystem, WindowsWindow,
 };
 
 pub(crate) struct WindowsPlatform {
@@ -304,9 +304,8 @@ impl Platform for WindowsPlatform {
         }
     }
 
-    // todo(windows)
     fn active_window(&self) -> Option<AnyWindowHandle> {
-        None
+        try_get_window_inner(unsafe { GetActiveWindow() }).map(|inner| inner.handle)
     }
 
     fn open_window(
