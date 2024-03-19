@@ -89,6 +89,18 @@ impl Keymap {
             .filter(move |binding| binding.action().partial_eq(action))
     }
 
+    /// .
+    pub fn next_bindings_for_keystrokes<'a>(
+        &'a self,
+        keystrokes: &'a [Keystroke],
+    ) -> impl DoubleEndedIterator<Item = &KeyBinding> {
+        let next_bindings = self.bindings().filter(|binding| {
+            binding.keystrokes.len() > keystrokes.len()
+                && binding.keystrokes.starts_with(keystrokes)
+        });
+        next_bindings
+    }
+
     /// Check if the given binding is enabled, given a certain key context.
     pub fn binding_enabled(&self, binding: &KeyBinding, context: &[KeyContext]) -> bool {
         // If binding has a context predicate, it must match the current context,

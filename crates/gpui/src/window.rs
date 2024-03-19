@@ -1316,7 +1316,7 @@ impl<'a> WindowContext<'a> {
                 }
 
                 currently_pending.timer = Some(self.spawn(|mut cx| async move {
-                    cx.background_executor.timer(Duration::from_secs(1)).await;
+                    cx.background_executor.timer(Duration::from_secs(5)).await;
                     cx.update(move |cx| {
                         cx.clear_pending_keystrokes();
                         let Some(currently_pending) = cx.window.pending_input.take() else {
@@ -1402,6 +1402,19 @@ impl<'a> WindowContext<'a> {
             .rendered_frame
             .dispatch_tree
             .has_pending_keystrokes()
+    }
+
+    /// Get the next available bindings
+    pub fn next_bindings(&self) -> Vec<KeyBinding> {
+        if let Some(pending_input) = &self.window.pending_input {
+            (&*self.keymap)
+                .borrow()
+                .next_bindings_for_keystrokes(pending_input.keystrokes.as_slice())
+                .map(|k| k.clone())
+                .collect()
+        } else {
+            vec![]
+        }
     }
 
     fn replay_pending_input(&mut self, currently_pending: PendingInput) {

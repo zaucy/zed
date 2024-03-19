@@ -26,11 +26,12 @@ use futures::{
     Future, FutureExt, StreamExt,
 };
 use gpui::{
-    actions, canvas, impl_actions, point, size, Action, AnyElement, AnyView, AnyWeakView,
-    AppContext, AsyncAppContext, AsyncWindowContext, Bounds, DragMoveEvent, Entity as _, EntityId,
-    EventEmitter, FocusHandle, FocusableView, Global, GlobalPixels, KeyContext, Keystroke,
-    LayoutId, ManagedView, Model, ModelContext, PathPromptOptions, Point, PromptLevel, Render,
-    Size, Subscription, Task, View, WeakView, WindowHandle, WindowOptions,
+    actions, canvas, impl_actions, overlay, point, size, Action, AnchorCorner, AnyElement, AnyView,
+    AnyWeakView, AppContext, AsyncAppContext, AsyncWindowContext, Bounds, DragMoveEvent,
+    Entity as _, EntityId, EventEmitter, FocusHandle, FocusableView, Global, GlobalPixels,
+    KeyContext, Keystroke, LayoutId, ManagedView, Model, ModelContext, OverlayPositionMode,
+    PathPromptOptions, Point, PromptLevel, Render, RenderOnce, Rgba, Size, Subscription, Task,
+    View, WeakView, WindowHandle, WindowOptions,
 };
 use item::{FollowableItem, FollowableItemHandle, Item, ItemHandle, ItemSettings, ProjectItem};
 use itertools::Itertools;
@@ -3885,6 +3886,83 @@ impl FocusableView for Workspace {
 #[derive(Clone, Render)]
 struct DraggedDock(DockPosition);
 
+#[derive(IntoElement)]
+struct NextKeyBindingsOverlay {}
+
+impl NextKeyBindingsOverlay {
+    fn new() -> Self {
+        Self {}
+    }
+}
+
+impl RenderOnce for NextKeyBindingsOverlay {
+    fn render(self, cx: &mut WindowContext) -> impl IntoElement {
+        let mut next_action_keystrokes = std::collections::HashMap::new();
+
+        for next_binding in cx.next_bindings() {
+            let action_name = next_binding.action().name().to_string();
+            let last_keystroke = next_binding.keystrokes().last().unwrap();
+            next_action_keystrokes
+                .entry(action_name)
+                .or_insert(vec![])
+                .push(last_keystroke.clone());
+        }
+
+        overlay()
+            .anchor(AnchorCorner::BottomRight)
+            .position_mode(OverlayPositionMode::Window)
+            .snap_to_window()
+            .child(
+                div()
+                    .p_2()
+                    .bg(cx.theme().colors().panel_background)
+                    .border_1()
+                    .rounded_sm()
+                    .border_color(Rgba {
+                        r: 1.0,
+                        g: 0.1,
+                        b: 0.1,
+                        a: 1.0,
+                    })
+                    .text_xs()
+                    .children(next_action_keystrokes.iter().sorted_by_key(|k| k.0).map(
+                        |(action_name, keystrokes)| {
+                            div()
+                                .flex()
+                                .flex_row()
+                                .gap_2()
+                                .w_full()
+                                .content_stretch()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .w_48()
+                                        .flex_wrap()
+                                        .gap_1()
+                                        .my_2()
+                                        .children(keystrokes.iter().map(|keystroke| {
+                                            div()
+                                                .bg(Rgba {
+                                                    r: 0.0,
+                                                    g: 0.0,
+                                                    b: 0.0,
+                                                    a: 0.1,
+                                                })
+                                                .rounded_sm()
+                                                .p_0p5()
+                                                .m_0p5()
+                                                .child(keystroke.to_string())
+                                        })),
+                                )
+                                .child(div().flex().flex_row().child(action_name.to_string()))
+                        },
+                    )),
+            )
+    }
+}
+
 impl Render for Workspace {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
         let mut context = KeyContext::default();
@@ -3915,6 +3993,7 @@ impl Render for Workspace {
             .text_color(colors.text)
             .bg(colors.background)
             .children(self.titlebar_item.clone())
+            .child(NextKeyBindingsOverlay::new())
             .child(
                 div()
                     .id("workspace")

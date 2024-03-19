@@ -12,7 +12,7 @@ use editor::Editor;
 use env_logger::Builder;
 use fs::RealFs;
 use futures::{future, StreamExt};
-use gpui::{App, AppContext, AsyncAppContext, Context, SemanticVersion, Task};
+use gpui::{App, AppContext, AsyncAppContext, Context, SemanticVersion, Task, View};
 use isahc::{prelude::Configurable, Request};
 use language::LanguageRegistry;
 use log::LevelFilter;
