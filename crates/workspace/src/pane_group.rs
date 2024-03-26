@@ -238,13 +238,29 @@ impl Member {
                     };
                 }
 
+                let active_pane_focused =
+                    self.contains(active_pane) && active_pane.focus_handle(cx).contains_focused(cx);
+
                 div()
-                    .relative()
-                    .flex_1()
+                    .p_4()
                     .size_full()
                     .child(
-                        AnyView::from(pane.clone())
-                            .cached(StyleRefinement::default().v_flex().size_full()),
+                        div()
+                            .relative()
+                            .flex_1()
+                            .size_full()
+                            .bg(cx.theme().colors().background)
+                            .rounded_lg()
+                            .shadow_lg()
+                            .border()
+                            .border_color(cx.theme().colors().border)
+                            .when(active_pane_focused, |this| {
+                                this.border_color(cx.theme().colors().border_focused)
+                            })
+                            .child(
+                                AnyView::from(pane.clone())
+                                    .cached(StyleRefinement::default().v_flex().size_full()),
+                            ),
                     )
                     .when_some(leader_border, |this, color| {
                         this.child(

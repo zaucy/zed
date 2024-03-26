@@ -4026,12 +4026,14 @@ impl Render for Workspace {
                             .inset_0()
                             .shadow_lg();
 
-                        Some(match self.zoomed_position {
-                            Some(DockPosition::Left) => div.right_2().border_r(),
-                            Some(DockPosition::Right) => div.left_2().border_l(),
-                            Some(DockPosition::Bottom) => div.top_2().border_t(),
-                            None => div.top_2().bottom_2().left_2().right_2().border(),
-                        })
+                        Some(div)
+
+                        // Some(match self.zoomed_position {
+                        //     Some(DockPosition::Left) => div.right_2().border_r(),
+                        //     Some(DockPosition::Right) => div.left_2().border_l(),
+                        //     Some(DockPosition::Bottom) => div.top_2().border_t(),
+                        //     None => div.top_2().bottom_2().left_2().right_2().border(),
+                        // })
                     }))
                     .child(self.modal_layer.clone())
                     .children(self.render_notifications(cx)),

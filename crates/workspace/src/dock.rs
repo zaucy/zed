@@ -544,6 +544,13 @@ impl Dock {
 
         dispatch_context
     }
+
+    fn has_focus(&self, cx: &WindowContext) -> bool {
+        self.focus_handle.contains_focused(cx)
+            || self
+                .active_panel()
+                .map_or(false, |panel| panel.focus_handle(cx).contains_focused(cx))
+    }
 }
 
 impl Render for Dock {
@@ -599,33 +606,44 @@ impl Render for Dock {
             div()
                 .key_context(dispatch_context)
                 .track_focus(&self.focus_handle)
+                .p_4()
                 .flex()
-                .bg(cx.theme().colors().panel_background)
-                .border_color(cx.theme().colors().border)
-                .overflow_hidden()
-                .map(|this| match self.position().axis() {
-                    Axis::Horizontal => this.w(size).h_full().flex_row(),
-                    Axis::Vertical => this.h(size).w_full().flex_col(),
-                })
-                .map(|this| match self.position() {
-                    DockPosition::Left => this.border_r(),
-                    DockPosition::Right => this.border_l(),
-                    DockPosition::Bottom => this.border_t(),
-                })
                 .child(
                     div()
-                        .map(|this| match self.position().axis() {
-                            Axis::Horizontal => this.min_w(size).h_full(),
-                            Axis::Vertical => this.min_h(size).w_full(),
+                        .flex()
+                        .bg(cx.theme().colors().panel_background)
+                        .border_color(cx.theme().colors().border)
+                        .border()
+                        .shadow_md()
+                        .when(self.has_focus(cx), |this| {
+                            this.border_color(cx.theme().colors().border_focused)
                         })
+                        .rounded_lg()
+                        .overflow_hidden()
+                        .map(|this| match self.position().axis() {
+                            Axis::Horizontal => this.w(size).h_full().flex_row(),
+                            Axis::Vertical => this.h(size).w_full().flex_col(),
+                        })
+                        // .map(|this| match self.position() {
+                        //     DockPosition::Left => this.border_r(),
+                        //     DockPosition::Right => this.border_l(),
+                        //     DockPosition::Bottom => this.border_t(),
+                        // })
                         .child(
-                            entry
-                                .panel
-                                .to_any()
-                                .cached(StyleRefinement::default().v_flex().size_full()),
-                        ),
+                            div()
+                                .map(|this| match self.position().axis() {
+                                    Axis::Horizontal => this.min_w(size).h_full(),
+                                    Axis::Vertical => this.min_h(size).w_full(),
+                                })
+                                .child(
+                                    entry
+                                        .panel
+                                        .to_any()
+                                        .cached(StyleRefinement::default().v_flex().size_full()),
+                                ),
+                        )
+                        .child(handle),
                 )
-                .child(handle)
         } else {
             div()
                 .key_context(dispatch_context)
