@@ -3,6 +3,7 @@ use async_compression::futures::bufread::GzipDecoder;
 use async_tar::Archive;
 use async_trait::async_trait;
 use futures::{io::BufReader, StreamExt};
+use gpui::AsyncAppContext;
 use language::{LanguageServerName, LspAdapterDelegate};
 use lsp::LanguageServerBinary;
 use smol::fs;
@@ -18,6 +19,20 @@ pub struct OmniSharpAdapter;
 impl super::LspAdapter for OmniSharpAdapter {
     fn name(&self) -> LanguageServerName {
         LanguageServerName("OmniSharp".into())
+    }
+
+    async fn check_if_user_installed(
+        &self,
+        delegate: &dyn LspAdapterDelegate,
+        _: &AsyncAppContext,
+    ) -> Option<LanguageServerBinary> {
+        let env = delegate.shell_env().await;
+        let path = delegate.which("omnisharp".as_ref()).await?;
+        Some(LanguageServerBinary {
+            path,
+            arguments: server_binary_arguments(),
+            env: Some(env),
+        })
     }
 
     async fn fetch_latest_server_version(
