@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use collections::HashMap;
 use feature_flags::FeatureFlagAppExt;
 use futures::StreamExt;
-use gpui::AppContext;
+use gpui::{AppContext, AsyncAppContext};
 use language::{LanguageRegistry, LanguageServerName, LspAdapter, LspAdapterDelegate};
 use lsp::LanguageServerBinary;
 use node_runtime::NodeRuntime;
@@ -98,6 +98,22 @@ impl LspAdapter for JsonLspAdapter {
                 .npm_package_latest_version("vscode-json-languageserver")
                 .await?,
         ) as Box<_>)
+    }
+
+    async fn check_if_user_installed(
+        &self,
+        delegate: &dyn LspAdapterDelegate,
+        _: &AsyncAppContext,
+    ) -> Option<LanguageServerBinary> {
+        let env = delegate.shell_env().await;
+        delegate
+            .which(std::ffi::OsStr::new("vscode-json-languageserver"))
+            .await
+            .map(|path| LanguageServerBinary {
+                path,
+                arguments: vec!["--stdio".into()],
+                env: Some(env),
+            })
     }
 
     async fn fetch_server_binary(

@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::StreamExt;
+use gpui::AsyncAppContext;
 use language::{LanguageServerName, LspAdapter, LspAdapterDelegate};
 use lsp::LanguageServerBinary;
 use node_runtime::NodeRuntime;
@@ -35,6 +36,22 @@ impl HtmlLspAdapter {
 impl LspAdapter for HtmlLspAdapter {
     fn name(&self) -> LanguageServerName {
         LanguageServerName("vscode-html-language-server".into())
+    }
+
+    async fn check_if_user_installed(
+        &self,
+        delegate: &dyn LspAdapterDelegate,
+        _: &AsyncAppContext,
+    ) -> Option<LanguageServerBinary> {
+        let env = delegate.shell_env().await;
+        delegate
+            .which(std::ffi::OsStr::new("vscode-html-langauge-server"))
+            .await
+            .map(|path| LanguageServerBinary {
+                path,
+                arguments: vec!["--stdio".into()],
+                env: Some(env),
+            })
     }
 
     async fn fetch_latest_server_version(

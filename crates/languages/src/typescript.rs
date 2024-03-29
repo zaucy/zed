@@ -3,7 +3,7 @@ use async_compression::futures::bufread::GzipDecoder;
 use async_tar::Archive;
 use async_trait::async_trait;
 use collections::HashMap;
-use gpui::AppContext;
+use gpui::{AppContext, AsyncAppContext};
 use language::{LanguageServerName, LspAdapter, LspAdapterDelegate};
 use lsp::{CodeActionKind, LanguageServerBinary};
 use node_runtime::NodeRuntime;
@@ -53,6 +53,22 @@ struct TypeScriptVersions {
 impl LspAdapter for TypeScriptLspAdapter {
     fn name(&self) -> LanguageServerName {
         LanguageServerName("typescript-language-server".into())
+    }
+
+    async fn check_if_user_installed(
+        &self,
+        delegate: &dyn LspAdapterDelegate,
+        _: &AsyncAppContext,
+    ) -> Option<LanguageServerBinary> {
+        let env = delegate.shell_env().await;
+        delegate
+            .which(std::ffi::OsStr::new("typescript-language-server"))
+            .await
+            .map(|path| LanguageServerBinary {
+                path,
+                arguments: vec!["--stdio".into()],
+                env: Some(env),
+            })
     }
 
     async fn fetch_latest_server_version(
