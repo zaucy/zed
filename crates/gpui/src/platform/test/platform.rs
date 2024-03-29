@@ -12,7 +12,6 @@ use std::{
     path::PathBuf,
     rc::{Rc, Weak},
     sync::Arc,
-    time::Duration,
 };
 
 /// TestPlatform implements the Platform trait for use in tests.
@@ -126,9 +125,8 @@ impl Platform for TestPlatform {
         #[cfg(target_os = "macos")]
         return Arc::new(crate::platform::mac::MacTextSystem::new());
 
-        // todo("windows")
         #[cfg(target_os = "windows")]
-        unimplemented!()
+        return Arc::new(crate::platform::windows::WindowsTextSystem::new());
     }
 
     fn run(&self, _on_finish_launching: Box<dyn FnOnce()>) {
@@ -301,10 +299,6 @@ impl Platform for TestPlatform {
 
     fn delete_credentials(&self, _url: &str) -> Task<Result<()>> {
         Task::ready(Ok(()))
-    }
-
-    fn double_click_interval(&self) -> std::time::Duration {
-        Duration::from_millis(500)
     }
 
     fn register_url_scheme(&self, _: &str) -> Task<anyhow::Result<()>> {

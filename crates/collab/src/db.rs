@@ -12,7 +12,7 @@ use futures::StreamExt;
 use rand::{prelude::StdRng, Rng, SeedableRng};
 use rpc::{
     proto::{self},
-    ConnectionId,
+    ConnectionId, ExtensionMetadata,
 };
 use sea_orm::{
     entity::prelude::*,
@@ -126,12 +126,6 @@ impl Database {
         }
 
         Ok(new_migrations)
-    }
-
-    /// Initializes static data that resides in the database by upserting it.
-    pub async fn initialize_static_data(&mut self) -> Result<()> {
-        self.initialize_notification_kinds().await?;
-        Ok(())
     }
 
     /// Transaction runs things in a transaction. If you want to call other methods
@@ -458,6 +452,14 @@ pub struct CreatedChannelMessage {
     pub notifications: NotificationBatch,
 }
 
+pub struct UpdatedChannelMessage {
+    pub message_id: MessageId,
+    pub participant_connection_ids: Vec<ConnectionId>,
+    pub notifications: NotificationBatch,
+    pub reply_to_message_id: Option<MessageId>,
+    pub timestamp: PrimitiveDateTime,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, FromQueryResult, Serialize, Deserialize)]
 pub struct Invite {
     pub email_address: String,
@@ -723,20 +725,9 @@ pub struct NewExtensionVersion {
     pub description: String,
     pub authors: Vec<String>,
     pub repository: String,
+    pub schema_version: i32,
+    pub wasm_api_version: Option<String>,
     pub published_at: PrimitiveDateTime,
-}
-
-#[derive(Debug, Serialize, PartialEq)]
-pub struct ExtensionMetadata {
-    pub id: String,
-    pub name: String,
-    pub version: String,
-    pub authors: Vec<String>,
-    pub description: String,
-    pub repository: String,
-    #[serde(serialize_with = "serialize_iso8601")]
-    pub published_at: PrimitiveDateTime,
-    pub download_count: u64,
 }
 
 pub fn serialize_iso8601<S: Serializer>(

@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use util::{async_maybe, ResultExt};
+use util::{maybe, ResultExt};
 
 fn intelephense_server_binary_arguments(server_path: &Path) -> Vec<OsString> {
     vec![server_path.into(), "--stdio".into()]
@@ -97,23 +97,8 @@ impl LspAdapter for IntelephenseLspAdapter {
         get_cached_server_binary(container_dir, &*self.node).await
     }
 
-    async fn label_for_completion(
-        &self,
-        _item: &lsp::CompletionItem,
-        _language: &Arc<language::Language>,
-    ) -> Option<language::CodeLabel> {
-        None
-    }
-
-    fn initialization_options(&self) -> Option<serde_json::Value> {
-        None
-    }
     fn language_ids(&self) -> HashMap<String, String> {
         HashMap::from_iter([("PHP".into(), "php".into())])
-    }
-
-    fn prettier_plugins(&self) -> &[&'static str] {
-        &["@prettier/plugin-php"]
     }
 }
 
@@ -121,7 +106,7 @@ async fn get_cached_server_binary(
     container_dir: PathBuf,
     node: &dyn NodeRuntime,
 ) -> Option<LanguageServerBinary> {
-    async_maybe!({
+    maybe!(async {
         let mut last_version_dir = None;
         let mut entries = fs::read_dir(&container_dir).await?;
         while let Some(entry) = entries.next().await {

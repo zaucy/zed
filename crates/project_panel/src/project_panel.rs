@@ -4,7 +4,7 @@ use client::{ErrorCode, ErrorExt};
 use settings::Settings;
 
 use db::kvp::KEY_VALUE_STORE;
-use editor::{actions::Cancel, scroll::Autoscroll, Editor};
+use editor::{actions::Cancel, items::entry_git_aware_label_color, scroll::Autoscroll, Editor};
 use file_associations::FileAssociations;
 
 use anyhow::{anyhow, Result};
@@ -108,6 +108,7 @@ pub struct EntryDetails {
 
 #[derive(PartialEq, Clone, Default, Debug, Deserialize)]
 pub struct Delete {
+    #[serde(default)]
     pub skip_prompt: bool,
 }
 
@@ -1180,7 +1181,7 @@ impl ProjectPanel {
                         inode: 0,
                         mtime: entry.mtime,
                         is_symlink: false,
-                        is_ignored: false,
+                        is_ignored: entry.is_ignored,
                         is_external: false,
                         is_private: false,
                         git_status: entry.git_status,
@@ -1408,23 +1409,8 @@ impl ProjectPanel {
             .selection
             .map_or(false, |selection| selection.entry_id == entry_id);
         let width = self.size(cx);
-
-        let filename_text_color = details
-            .git_status
-            .as_ref()
-            .map(|status| match status {
-                GitFileStatus::Added => Color::Created,
-                GitFileStatus::Modified => Color::Modified,
-                GitFileStatus::Conflict => Color::Conflict,
-            })
-            .unwrap_or(if is_selected {
-                Color::Default
-            } else if details.is_ignored {
-                Color::Disabled
-            } else {
-                Color::Muted
-            });
-
+        let filename_text_color =
+            entry_git_aware_label_color(details.git_status, details.is_ignored, is_selected);
         let file_name = details.filename.clone();
         let icon = details.icon.clone();
         let depth = details.depth;
@@ -1464,7 +1450,7 @@ impl ProjectPanel {
                         .ml_1(),
                     )
                     .on_click(cx.listener(move |this, event: &gpui::ClickEvent, cx| {
-                        if event.down.button == MouseButton::Right {
+                        if event.down.button == MouseButton::Right || event.down.first_mouse {
                             return;
                         }
                         if !show_editor {

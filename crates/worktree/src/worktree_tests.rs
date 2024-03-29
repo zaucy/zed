@@ -7,7 +7,7 @@ use client::Client;
 use clock::FakeSystemClock;
 use fs::{repository::GitFileStatus, FakeFs, Fs, RealFs, RemoveOptions};
 use git::GITIGNORE;
-use gpui::{ModelContext, Task, TestAppContext};
+use gpui::{BorrowAppContext, ModelContext, Task, TestAppContext};
 use parking_lot::Mutex;
 use postage::stream::Stream;
 use pretty_assertions::assert_eq;
@@ -459,7 +459,7 @@ async fn test_renaming_case_only(cx: &mut TestAppContext) {
     const OLD_NAME: &str = "aaa.rs";
     const NEW_NAME: &str = "AAA.rs";
 
-    let fs = Arc::new(RealFs);
+    let fs = Arc::new(RealFs::default());
     let temp_root = temp_tree(json!({
         OLD_NAME: "",
     }));
@@ -851,23 +851,15 @@ async fn test_rescan_with_gitignore(cx: &mut TestAppContext) {
 
     cx.read(|cx| {
         let tree = tree.read(cx);
-        assert!(
-            !tree
-                .entry_for_path("tracked-dir/tracked-file1")
-                .unwrap()
-                .is_ignored
-        );
-        assert!(
-            tree.entry_for_path("tracked-dir/ancestor-ignored-file1")
-                .unwrap()
-                .is_ignored
-        );
-        assert!(
-            tree.entry_for_path("ignored-dir/ignored-file1")
-                .unwrap()
-                .is_ignored
-        );
+        assert_entry_git_state(tree, "tracked-dir/tracked-file1", None, false);
+        assert_entry_git_state(tree, "tracked-dir/ancestor-ignored-file1", None, true);
+        assert_entry_git_state(tree, "ignored-dir/ignored-file1", None, true);
     });
+
+    fs.set_status_for_repo_via_working_copy_change(
+        &Path::new("/root/tree/.git"),
+        &[(Path::new("tracked-dir/tracked-file2"), GitFileStatus::Added)],
+    );
 
     fs.create_file(
         "/root/tree/tracked-dir/tracked-file2".as_ref(),
@@ -891,23 +883,74 @@ async fn test_rescan_with_gitignore(cx: &mut TestAppContext) {
     cx.executor().run_until_parked();
     cx.read(|cx| {
         let tree = tree.read(cx);
-        assert!(
-            !tree
-                .entry_for_path("tracked-dir/tracked-file2")
-                .unwrap()
-                .is_ignored
+        assert_entry_git_state(
+            tree,
+            "tracked-dir/tracked-file2",
+            Some(GitFileStatus::Added),
+            false,
         );
-        assert!(
-            tree.entry_for_path("tracked-dir/ancestor-ignored-file2")
-                .unwrap()
-                .is_ignored
-        );
-        assert!(
-            tree.entry_for_path("ignored-dir/ignored-file2")
-                .unwrap()
-                .is_ignored
-        );
+        assert_entry_git_state(tree, "tracked-dir/ancestor-ignored-file2", None, true);
+        assert_entry_git_state(tree, "ignored-dir/ignored-file2", None, true);
         assert!(tree.entry_for_path(".git").unwrap().is_ignored);
+    });
+}
+
+#[gpui::test]
+async fn test_update_gitignore(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.insert_tree(
+        "/root",
+        json!({
+            ".git": {},
+            ".gitignore": "*.txt\n",
+            "a.xml": "<a></a>",
+            "b.txt": "Some text"
+        }),
+    )
+    .await;
+
+    let tree = Worktree::local(
+        build_client(cx),
+        "/root".as_ref(),
+        true,
+        fs.clone(),
+        Default::default(),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+    cx.read(|cx| tree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+
+    tree.read_with(cx, |tree, _| {
+        tree.as_local()
+            .unwrap()
+            .refresh_entries_for_paths(vec![Path::new("").into()])
+    })
+    .recv()
+    .await;
+
+    cx.read(|cx| {
+        let tree = tree.read(cx);
+        assert_entry_git_state(tree, "a.xml", None, false);
+        assert_entry_git_state(tree, "b.txt", None, true);
+    });
+
+    fs.atomic_write("/root/.gitignore".into(), "*.xml".into())
+        .await
+        .unwrap();
+
+    fs.set_status_for_repo_via_working_copy_change(
+        &Path::new("/root/.git"),
+        &[(Path::new("b.txt"), GitFileStatus::Added)],
+    );
+
+    cx.executor().run_until_parked();
+    cx.read(|cx| {
+        let tree = tree.read(cx);
+        assert_entry_git_state(tree, "a.xml", None, true);
+        assert_entry_git_state(tree, "b.txt", Some(GitFileStatus::Added), false);
     });
 }
 
@@ -926,7 +969,7 @@ async fn test_write_file(cx: &mut TestAppContext) {
         build_client(cx),
         dir.path(),
         true,
-        Arc::new(RealFs),
+        Arc::new(RealFs::default()),
         Default::default(),
         &mut cx.to_async(),
     )
@@ -1006,7 +1049,7 @@ async fn test_file_scan_exclusions(cx: &mut TestAppContext) {
         build_client(cx),
         dir.path(),
         true,
-        Arc::new(RealFs),
+        Arc::new(RealFs::default()),
         Default::default(),
         &mut cx.to_async(),
     )
@@ -1110,7 +1153,7 @@ async fn test_fs_events_in_exclusions(cx: &mut TestAppContext) {
         build_client(cx),
         dir.path(),
         true,
-        Arc::new(RealFs),
+        Arc::new(RealFs::default()),
         Default::default(),
         &mut cx.to_async(),
     )
@@ -1220,7 +1263,7 @@ async fn test_fs_events_in_dot_git_worktree(cx: &mut TestAppContext) {
         build_client(cx),
         dot_git_worktree_dir.clone(),
         true,
-        Arc::new(RealFs),
+        Arc::new(RealFs::default()),
         Default::default(),
         &mut cx.to_async(),
     )
@@ -1361,7 +1404,7 @@ async fn test_create_dir_all_on_create_entry(cx: &mut TestAppContext) {
         )
     });
 
-    let fs_real = Arc::new(RealFs);
+    let fs_real = Arc::new(RealFs::default());
     let temp_root = temp_tree(json!({
         "a": {}
     }));
@@ -1965,7 +2008,7 @@ async fn test_rename_work_directory(cx: &mut TestAppContext) {
         build_client(cx),
         root_path,
         true,
-        Arc::new(RealFs),
+        Arc::new(RealFs::default()),
         Default::default(),
         &mut cx.to_async(),
     )
@@ -2044,7 +2087,7 @@ async fn test_git_repository_for_path(cx: &mut TestAppContext) {
         build_client(cx),
         root.path(),
         true,
-        Arc::new(RealFs),
+        Arc::new(RealFs::default()),
         Default::default(),
         &mut cx.to_async(),
     )
@@ -2185,7 +2228,7 @@ async fn test_git_status(cx: &mut TestAppContext) {
         build_client(cx),
         root.path(),
         true,
-        Arc::new(RealFs),
+        Arc::new(RealFs::default()),
         Default::default(),
         &mut cx.to_async(),
     )
@@ -2579,4 +2622,15 @@ fn init_test(cx: &mut gpui::TestAppContext) {
         cx.set_global(settings_store);
         WorktreeSettings::register(cx);
     });
+}
+
+fn assert_entry_git_state(
+    tree: &Worktree,
+    path: &str,
+    git_status: Option<GitFileStatus>,
+    is_ignored: bool,
+) {
+    let entry = tree.entry_for_path(path).expect("entry {path} not found");
+    assert_eq!(entry.git_status, git_status);
+    assert_eq!(entry.is_ignored, is_ignored);
 }

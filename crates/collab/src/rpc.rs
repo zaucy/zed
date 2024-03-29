@@ -1,17 +1,17 @@
 mod connection_pool;
 
 use crate::{
-    auth::{self, Impersonator},
+    auth::{self},
     db::{
-        self, BufferId, Channel, ChannelId, ChannelRole, ChannelsForUser, CreatedChannelMessage,
-        Database, InviteMemberResult, MembershipUpdated, MessageId, NotificationId, Project,
-        ProjectId, RemoveChannelMemberResult, ReplicaId, RespondToChannelInvite, RoomId, ServerId,
-        User, UserId,
+        self, dev_server, BufferId, Channel, ChannelId, ChannelRole, ChannelsForUser,
+        CreatedChannelMessage, Database, InviteMemberResult, MembershipUpdated, MessageId,
+        NotificationId, Project, ProjectId, RemoveChannelMemberResult, ReplicaId,
+        RespondToChannelInvite, RoomId, ServerId, UpdatedChannelMessage, User, UserId,
     },
     executor::Executor,
-    AppState, Error, Result,
+    AppState, Error, RateLimit, RateLimiter, Result,
 };
-use anyhow::anyhow;
+use anyhow::{anyhow, Context as _};
 use async_tungstenite::tungstenite::{
     protocol::CloseFrame as TungsteniteCloseFrame, Message as TungsteniteMessage,
 };
@@ -30,6 +30,8 @@ use axum::{
 };
 use collections::{HashMap, HashSet};
 pub use connection_pool::{ConnectionPool, ZedVersion};
+use core::fmt::{self, Debug, Formatter};
+
 use futures::{
     channel::oneshot,
     future::{self, BoxFuture},
@@ -39,15 +41,14 @@ use futures::{
 use prometheus::{register_int_gauge, IntGauge};
 use rpc::{
     proto::{
-        self, Ack, AnyTypedEnvelope, EntityMessage, EnvelopedMessage, LiveKitConnectionInfo,
-        RequestMessage, ShareProject, UpdateChannelBufferCollaborators,
+        self, Ack, AnyTypedEnvelope, EntityMessage, EnvelopedMessage, LanguageModelRole,
+        LiveKitConnectionInfo, RequestMessage, ShareProject, UpdateChannelBufferCollaborators,
     },
     Connection, ConnectionId, ErrorCode, ErrorCodeExt, ErrorExt, Peer, Receipt, TypedEnvelope,
 };
 use serde::{Serialize, Serializer};
 use std::{
     any::TypeId,
-    fmt,
     future::Future,
     marker::PhantomData,
     mem,
@@ -63,8 +64,11 @@ use std::{
 use time::OffsetDateTime;
 use tokio::sync::{watch, Semaphore};
 use tower::ServiceBuilder;
-use tracing::{field, info_span, instrument, Instrument};
-use util::SemanticVersion;
+use tracing::{
+    field::{self},
+    info_span, instrument, Instrument,
+};
+use util::{http::IsahcHttpClient, SemanticVersion};
 
 pub const RECONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -92,14 +96,54 @@ impl<R: RequestMessage> Response<R> {
     }
 }
 
+struct StreamingResponse<R: RequestMessage> {
+    peer: Arc<Peer>,
+    receipt: Receipt<R>,
+}
+
+impl<R: RequestMessage> StreamingResponse<R> {
+    fn send(&self, payload: R::Response) -> Result<()> {
+        self.peer.respond(self.receipt, payload)?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum Principal {
+    User(User),
+    Impersonated { user: User, admin: User },
+    DevServer(dev_server::Model),
+}
+
+impl Principal {
+    fn update_span(&self, span: &tracing::Span) {
+        match &self {
+            Principal::User(user) => {
+                span.record("user_id", &user.id.0);
+                span.record("login", &user.github_login);
+            }
+            Principal::Impersonated { user, admin } => {
+                span.record("user_id", &user.id.0);
+                span.record("login", &user.github_login);
+                span.record("impersonator", &admin.github_login);
+            }
+            Principal::DevServer(dev_server) => {
+                span.record("dev_server_id", &dev_server.id.0);
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Session {
-    user_id: UserId,
+    principal: Principal,
     connection_id: ConnectionId,
     db: Arc<tokio::sync::Mutex<DbHandle>>,
     peer: Arc<Peer>,
     connection_pool: Arc<parking_lot::Mutex<ConnectionPool>>,
     live_kit_client: Option<Arc<dyn live_kit_server::api::Client>>,
+    http_client: IsahcHttpClient,
+    rate_limiter: Arc<RateLimiter>,
     _executor: Executor,
 }
 
@@ -122,14 +166,98 @@ impl Session {
             _not_send: PhantomData,
         }
     }
+
+    fn for_user(self) -> Option<UserSession> {
+        UserSession::new(self)
+    }
+
+    fn user_id(&self) -> Option<UserId> {
+        match &self.principal {
+            Principal::User(user) => Some(user.id),
+            Principal::Impersonated { user, .. } => Some(user.id),
+            Principal::DevServer(_) => None,
+        }
+    }
 }
 
-impl fmt::Debug for Session {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Session")
-            .field("user_id", &self.user_id)
-            .field("connection_id", &self.connection_id)
-            .finish()
+impl Debug for Session {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let mut result = f.debug_struct("Session");
+        match &self.principal {
+            Principal::User(user) => {
+                result.field("user", &user.github_login);
+            }
+            Principal::Impersonated { user, admin } => {
+                result.field("user", &user.github_login);
+                result.field("impersonator", &admin.github_login);
+            }
+            Principal::DevServer(dev_server) => {
+                result.field("dev_server", &dev_server.id);
+            }
+        }
+        result.field("connection_id", &self.connection_id).finish()
+    }
+}
+
+struct UserSession(Session);
+
+impl UserSession {
+    pub fn new(s: Session) -> Option<Self> {
+        s.user_id().map(|_| UserSession(s))
+    }
+    pub fn user_id(&self) -> UserId {
+        self.0.user_id().unwrap()
+    }
+}
+
+impl Deref for UserSession {
+    type Target = Session;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl DerefMut for UserSession {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+fn user_handler<M: RequestMessage, Fut>(
+    handler: impl 'static + Send + Sync + Fn(M, Response<M>, UserSession) -> Fut,
+) -> impl 'static + Send + Sync + Fn(M, Response<M>, Session) -> BoxFuture<'static, Result<()>>
+where
+    Fut: Send + Future<Output = Result<()>>,
+{
+    let handler = Arc::new(handler);
+    move |message, response, session| {
+        let handler = handler.clone();
+        Box::pin(async move {
+            if let Some(user_session) = session.for_user() {
+                Ok(handler(message, response, user_session).await?)
+            } else {
+                Err(Error::Internal(anyhow!("must be a user")))
+            }
+        })
+    }
+}
+
+fn user_message_handler<M: EnvelopedMessage, InnertRetFut>(
+    handler: impl 'static + Send + Sync + Fn(M, UserSession) -> InnertRetFut,
+) -> impl 'static + Send + Sync + Fn(M, Session) -> BoxFuture<'static, Result<()>>
+where
+    InnertRetFut: Send + Future<Output = Result<()>>,
+{
+    let handler = Arc::new(handler);
+    move |message, session| {
+        let handler = handler.clone();
+        Box::pin(async move {
+            if let Some(user_session) = session.for_user() {
+                Ok(handler(message, user_session).await?)
+            } else {
+                Err(Error::Internal(anyhow!("must be a user")))
+            }
+        })
     }
 }
 
@@ -148,7 +276,6 @@ pub struct Server {
     peer: Arc<Peer>,
     pub(crate) connection_pool: Arc<parking_lot::Mutex<ConnectionPool>>,
     app_state: Arc<AppState>,
-    executor: Executor,
     handlers: HashMap<TypeId, MessageHandler>,
     teardown: watch::Sender<bool>,
 }
@@ -175,12 +302,11 @@ where
 }
 
 impl Server {
-    pub fn new(id: ServerId, app_state: Arc<AppState>, executor: Executor) -> Arc<Self> {
+    pub fn new(id: ServerId, app_state: Arc<AppState>) -> Arc<Self> {
         let mut server = Self {
             id: parking_lot::Mutex::new(id),
             peer: Peer::new(id.0 as u32),
-            app_state,
-            executor,
+            app_state: app_state.clone(),
             connection_pool: Default::default(),
             handlers: Default::default(),
             teardown: watch::channel(false).0,
@@ -188,20 +314,20 @@ impl Server {
 
         server
             .add_request_handler(ping)
-            .add_request_handler(create_room)
-            .add_request_handler(join_room)
-            .add_request_handler(rejoin_room)
-            .add_request_handler(leave_room)
-            .add_request_handler(set_room_participant_role)
-            .add_request_handler(call)
-            .add_request_handler(cancel_call)
-            .add_message_handler(decline_call)
-            .add_request_handler(update_participant_location)
+            .add_request_handler(user_handler(create_room))
+            .add_request_handler(user_handler(join_room))
+            .add_request_handler(user_handler(rejoin_room))
+            .add_request_handler(user_handler(leave_room))
+            .add_request_handler(user_handler(set_room_participant_role))
+            .add_request_handler(user_handler(call))
+            .add_request_handler(user_handler(cancel_call))
+            .add_message_handler(user_message_handler(decline_call))
+            .add_request_handler(user_handler(update_participant_location))
             .add_request_handler(share_project)
             .add_message_handler(unshare_project)
-            .add_request_handler(join_project)
-            .add_request_handler(join_hosted_project)
-            .add_message_handler(leave_project)
+            .add_request_handler(user_handler(join_project))
+            .add_request_handler(user_handler(join_hosted_project))
+            .add_message_handler(user_message_handler(leave_project))
             .add_request_handler(update_project)
             .add_request_handler(update_worktree)
             .add_message_handler(start_language_server)
@@ -240,6 +366,7 @@ impl Server {
             .add_request_handler(forward_mutating_project_request::<proto::ExpandProjectEntry>)
             .add_request_handler(forward_mutating_project_request::<proto::OnTypeFormatting>)
             .add_request_handler(forward_mutating_project_request::<proto::SaveBuffer>)
+            .add_request_handler(forward_mutating_project_request::<proto::BlameBuffer>)
             .add_message_handler(create_buffer_for_peer)
             .add_request_handler(update_buffer)
             .add_message_handler(broadcast_project_message_from_host::<proto::RefreshInlayHints>)
@@ -248,39 +375,63 @@ impl Server {
             .add_message_handler(broadcast_project_message_from_host::<proto::BufferSaved>)
             .add_message_handler(broadcast_project_message_from_host::<proto::UpdateDiffBase>)
             .add_request_handler(get_users)
-            .add_request_handler(fuzzy_search_users)
-            .add_request_handler(request_contact)
-            .add_request_handler(remove_contact)
-            .add_request_handler(respond_to_contact_request)
-            .add_request_handler(create_channel)
-            .add_request_handler(delete_channel)
-            .add_request_handler(invite_channel_member)
-            .add_request_handler(remove_channel_member)
-            .add_request_handler(set_channel_member_role)
-            .add_request_handler(set_channel_visibility)
-            .add_request_handler(rename_channel)
-            .add_request_handler(join_channel_buffer)
-            .add_request_handler(leave_channel_buffer)
-            .add_message_handler(update_channel_buffer)
-            .add_request_handler(rejoin_channel_buffers)
-            .add_request_handler(get_channel_members)
-            .add_request_handler(respond_to_channel_invite)
-            .add_request_handler(join_channel)
-            .add_request_handler(join_channel_chat)
-            .add_message_handler(leave_channel_chat)
-            .add_request_handler(send_channel_message)
-            .add_request_handler(remove_channel_message)
-            .add_request_handler(get_channel_messages)
-            .add_request_handler(get_channel_messages_by_id)
-            .add_request_handler(get_notifications)
-            .add_request_handler(mark_notification_as_read)
-            .add_request_handler(move_channel)
-            .add_request_handler(follow)
-            .add_message_handler(unfollow)
-            .add_message_handler(update_followers)
-            .add_request_handler(get_private_user_info)
-            .add_message_handler(acknowledge_channel_message)
-            .add_message_handler(acknowledge_buffer_version);
+            .add_request_handler(user_handler(fuzzy_search_users))
+            .add_request_handler(user_handler(request_contact))
+            .add_request_handler(user_handler(remove_contact))
+            .add_request_handler(user_handler(respond_to_contact_request))
+            .add_request_handler(user_handler(create_channel))
+            .add_request_handler(user_handler(delete_channel))
+            .add_request_handler(user_handler(invite_channel_member))
+            .add_request_handler(user_handler(remove_channel_member))
+            .add_request_handler(user_handler(set_channel_member_role))
+            .add_request_handler(user_handler(set_channel_visibility))
+            .add_request_handler(user_handler(rename_channel))
+            .add_request_handler(user_handler(join_channel_buffer))
+            .add_request_handler(user_handler(leave_channel_buffer))
+            .add_message_handler(user_message_handler(update_channel_buffer))
+            .add_request_handler(user_handler(rejoin_channel_buffers))
+            .add_request_handler(user_handler(get_channel_members))
+            .add_request_handler(user_handler(respond_to_channel_invite))
+            .add_request_handler(user_handler(join_channel))
+            .add_request_handler(user_handler(join_channel_chat))
+            .add_message_handler(user_message_handler(leave_channel_chat))
+            .add_request_handler(user_handler(send_channel_message))
+            .add_request_handler(user_handler(remove_channel_message))
+            .add_request_handler(user_handler(update_channel_message))
+            .add_request_handler(user_handler(get_channel_messages))
+            .add_request_handler(user_handler(get_channel_messages_by_id))
+            .add_request_handler(user_handler(get_notifications))
+            .add_request_handler(user_handler(mark_notification_as_read))
+            .add_request_handler(user_handler(move_channel))
+            .add_request_handler(user_handler(follow))
+            .add_message_handler(user_message_handler(unfollow))
+            .add_message_handler(user_message_handler(update_followers))
+            .add_request_handler(user_handler(get_private_user_info))
+            .add_message_handler(user_message_handler(acknowledge_channel_message))
+            .add_message_handler(user_message_handler(acknowledge_buffer_version))
+            .add_streaming_request_handler({
+                let app_state = app_state.clone();
+                move |request, response, session| {
+                    complete_with_language_model(
+                        request,
+                        response,
+                        session,
+                        app_state.config.openai_api_key.clone(),
+                        app_state.config.google_ai_api_key.clone(),
+                    )
+                }
+            })
+            .add_request_handler({
+                let app_state = app_state.clone();
+                user_handler(move |request, response, session| {
+                    count_tokens_with_language_model(
+                        request,
+                        response,
+                        session,
+                        app_state.config.google_ai_api_key.clone(),
+                    )
+                })
+            });
 
         Arc::new(server)
     }
@@ -289,12 +440,12 @@ impl Server {
         let server_id = *self.id.lock();
         let app_state = self.app_state.clone();
         let peer = self.peer.clone();
-        let timeout = self.executor.sleep(CLEANUP_TIMEOUT);
+        let timeout = self.app_state.executor.sleep(CLEANUP_TIMEOUT);
         let pool = self.connection_pool.clone();
         let live_kit_client = self.app_state.live_kit_client.clone();
 
         let span = info_span!("start server");
-        self.executor.spawn_detached(
+        self.app_state.executor.spawn_detached(
             async move {
                 tracing::info!("waiting for cleanup timeout");
                 timeout.await;
@@ -536,24 +687,54 @@ impl Server {
         })
     }
 
+    fn add_streaming_request_handler<F, Fut, M>(&mut self, handler: F) -> &mut Self
+    where
+        F: 'static + Send + Sync + Fn(M, StreamingResponse<M>, Session) -> Fut,
+        Fut: Send + Future<Output = Result<()>>,
+        M: RequestMessage,
+    {
+        let handler = Arc::new(handler);
+        self.add_handler(move |envelope, session| {
+            let receipt = envelope.receipt();
+            let handler = handler.clone();
+            async move {
+                let peer = session.peer.clone();
+                let response = StreamingResponse {
+                    peer: peer.clone(),
+                    receipt,
+                };
+                match (handler)(envelope.payload, response, session).await {
+                    Ok(()) => {
+                        peer.end_stream(receipt)?;
+                        Ok(())
+                    }
+                    Err(error) => {
+                        let proto_err = match &error {
+                            Error::Internal(err) => err.to_proto(),
+                            _ => ErrorCode::Internal.message(format!("{}", error)).to_proto(),
+                        };
+                        peer.respond_with_error(receipt, proto_err)?;
+                        Err(error)
+                    }
+                }
+            }
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn handle_connection(
         self: &Arc<Self>,
         connection: Connection,
         address: String,
-        user: User,
+        principal: Principal,
         zed_version: ZedVersion,
-        impersonator: Option<User>,
         send_connection_id: Option<oneshot::Sender<ConnectionId>>,
         executor: Executor,
     ) -> impl Future<Output = ()> {
         let this = self.clone();
-        let user_id = user.id;
-        let login = user.github_login.clone();
-        let span = info_span!("handle connection", %user_id, %login, %address, impersonator = field::Empty, connection_id = field::Empty);
-        if let Some(impersonator) = impersonator {
-            span.record("impersonator", &impersonator.github_login);
-        }
+        let span = info_span!("handle connection", %address, impersonator = field::Empty, connection_id = field::Empty);
+        principal.update_span(&span);
+
         let mut teardown = self.teardown.subscribe();
         async move {
             if *teardown.borrow() {
@@ -569,17 +750,27 @@ impl Server {
             tracing::Span::current().record("connection_id", format!("{}", connection_id));
             tracing::info!("connection opened");
 
+            let http_client = match IsahcHttpClient::new() {
+                Ok(http_client) => http_client,
+                Err(error) => {
+                    tracing::error!(?error, "failed to create HTTP client");
+                    return;
+                }
+            };
+
             let session = Session {
-                user_id,
+                principal: principal.clone(),
                 connection_id,
                 db: Arc::new(tokio::sync::Mutex::new(DbHandle(this.app_state.db.clone()))),
                 peer: this.peer.clone(),
                 connection_pool: this.connection_pool.clone(),
                 live_kit_client: this.app_state.live_kit_client.clone(),
-                _executor: executor.clone()
+                http_client,
+                rate_limiter: this.app_state.rate_limiter.clone(),
+                _executor: executor.clone(),
             };
 
-            if let Err(error) = this.send_initial_client_update(connection_id, user, zed_version, send_connection_id, &session).await {
+            if let Err(error) = this.send_initial_client_update(connection_id, &principal, zed_version, send_connection_id, &session).await {
                 tracing::error!(?error, "failed to send initial client update");
                 return;
             }
@@ -619,7 +810,8 @@ impl Server {
                             let type_name = message.payload_type_name();
                             // note: we copy all the fields from the parent span so we can query them in the logs.
                             // (https://github.com/tokio-rs/tracing/issues/2670).
-                            let span = tracing::info_span!("receive message", %user_id, %login, %connection_id, %address, type_name);
+                            let span = tracing::info_span!("receive message", %connection_id, %address, type_name);
+                            principal.update_span(&span);
                             let span_enter = span.enter();
                             if let Some(handler) = this.handlers.get(&message.payload_type_id()) {
                                 let is_background = message.is_background();
@@ -658,7 +850,7 @@ impl Server {
     async fn send_initial_client_update(
         &self,
         connection_id: ConnectionId,
-        user: User,
+        principal: &Principal,
         zed_version: ZedVersion,
         mut send_connection_id: Option<oneshot::Sender<ConnectionId>>,
         session: &Session,
@@ -670,6 +862,10 @@ impl Server {
             },
         )?;
         tracing::info!("sent hello message");
+
+        let Principal::User(user) = principal else {
+            return Ok(());
+        };
 
         if let Some(send_connection_id) = send_connection_id.take() {
             let _ = send_connection_id.send(connection_id);
@@ -889,8 +1085,7 @@ pub async fn handle_websocket_request(
     app_version_header: Option<TypedHeader<AppVersionHeader>>,
     ConnectInfo(socket_address): ConnectInfo<SocketAddr>,
     Extension(server): Extension<Arc<Server>>,
-    Extension(user): Extension<User>,
-    Extension(impersonator): Extension<Impersonator>,
+    Extension(principal): Extension<Principal>,
     ws: WebSocketUpgrade,
 ) -> axum::response::Response {
     if protocol_version != rpc::PROTOCOL_VERSION {
@@ -929,9 +1124,8 @@ pub async fn handle_websocket_request(
                 .handle_connection(
                     connection,
                     socket_address,
-                    user,
+                    principal,
                     version,
-                    impersonator.0,
                     None,
                     Executor::Production,
                 )
@@ -994,24 +1188,26 @@ async fn connection_lost(
 
     futures::select_biased! {
         _ = executor.sleep(RECONNECT_TIMEOUT).fuse() => {
-            log::info!("connection lost, removing all resources for user:{}, connection:{:?}", session.user_id, session.connection_id);
-            leave_room_for_session(&session).await.trace_err();
-            leave_channel_buffers_for_session(&session)
-                .await
-                .trace_err();
+            if let Some(session) = session.for_user() {
+                log::info!("connection lost, removing all resources for user:{}, connection:{:?}", session.user_id(), session.connection_id);
+                leave_room_for_session(&session).await.trace_err();
+                leave_channel_buffers_for_session(&session)
+                    .await
+                    .trace_err();
 
-            if !session
-                .connection_pool()
-                .await
-                .is_user_online(session.user_id)
-            {
-                let db = session.db().await;
-                if let Some(room) = db.decline_call(None, session.user_id).await.trace_err().flatten() {
-                    room_updated(&room, &session.peer);
+                if !session
+                    .connection_pool()
+                    .await
+                    .is_user_online(session.user_id())
+                {
+                    let db = session.db().await;
+                    if let Some(room) = db.decline_call(None, session.user_id()).await.trace_err().flatten() {
+                        room_updated(&room, &session.peer);
+                    }
                 }
-            }
 
-            update_user_contacts(session.user_id, &session).await?;
+                update_user_contacts(session.user_id(), &session).await?;
+            }
         }
         _ = teardown.changed().fuse() => {}
     }
@@ -1029,34 +1225,31 @@ async fn ping(_: proto::Ping, response: Response<proto::Ping>, _session: Session
 async fn create_room(
     _request: proto::CreateRoom,
     response: Response<proto::CreateRoom>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let live_kit_room = nanoid::nanoid!(30);
 
-    let live_kit_connection_info = {
-        let live_kit_room = live_kit_room.clone();
+    let live_kit_connection_info = util::maybe!(async {
         let live_kit = session.live_kit_client.as_ref();
+        let live_kit = live_kit?;
+        let user_id = session.user_id().to_string();
 
-        util::async_maybe!({
-            let live_kit = live_kit?;
+        let token = live_kit
+            .room_token(&live_kit_room, &user_id.to_string())
+            .trace_err()?;
 
-            let token = live_kit
-                .room_token(&live_kit_room, &session.user_id.to_string())
-                .trace_err()?;
-
-            Some(proto::LiveKitConnectionInfo {
-                server_url: live_kit.url().into(),
-                token,
-                can_publish: true,
-            })
+        Some(proto::LiveKitConnectionInfo {
+            server_url: live_kit.url().into(),
+            token,
+            can_publish: true,
         })
-    }
+    })
     .await;
 
     let room = session
         .db()
         .await
-        .create_room(session.user_id, session.connection_id, &live_kit_room)
+        .create_room(session.user_id(), session.connection_id, &live_kit_room)
         .await?;
 
     response.send(proto::CreateRoomResponse {
@@ -1064,7 +1257,7 @@ async fn create_room(
         live_kit_connection_info,
     })?;
 
-    update_user_contacts(session.user_id, &session).await?;
+    update_user_contacts(session.user_id(), &session).await?;
     Ok(())
 }
 
@@ -1072,7 +1265,7 @@ async fn create_room(
 async fn join_room(
     request: proto::JoinRoom,
     response: Response<proto::JoinRoom>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let room_id = RoomId::from_proto(request.id);
 
@@ -1086,7 +1279,7 @@ async fn join_room(
         let room = session
             .db()
             .await
-            .join_room(room_id, session.user_id, session.connection_id)
+            .join_room(room_id, session.user_id(), session.connection_id)
             .await?;
         room_updated(&room.room, &session.peer);
         room.into_inner()
@@ -1095,7 +1288,7 @@ async fn join_room(
     for connection_id in session
         .connection_pool()
         .await
-        .user_connection_ids(session.user_id)
+        .user_connection_ids(session.user_id())
     {
         session
             .peer
@@ -1112,7 +1305,7 @@ async fn join_room(
         if let Some(token) = live_kit
             .room_token(
                 &joined_room.room.live_kit_room,
-                &session.user_id.to_string(),
+                &session.user_id().to_string(),
             )
             .trace_err()
         {
@@ -1134,7 +1327,7 @@ async fn join_room(
         live_kit_connection_info,
     })?;
 
-    update_user_contacts(session.user_id, &session).await?;
+    update_user_contacts(session.user_id(), &session).await?;
     Ok(())
 }
 
@@ -1142,7 +1335,7 @@ async fn join_room(
 async fn rejoin_room(
     request: proto::RejoinRoom,
     response: Response<proto::RejoinRoom>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let room;
     let channel;
@@ -1150,7 +1343,7 @@ async fn rejoin_room(
         let mut rejoined_room = session
             .db()
             .await
-            .rejoin_room(request, session.user_id, session.connection_id)
+            .rejoin_room(request, session.user_id(), session.connection_id)
             .await?;
 
         response.send(proto::RejoinRoomResponse {
@@ -1323,7 +1516,7 @@ async fn rejoin_room(
         );
     }
 
-    update_user_contacts(session.user_id, &session).await?;
+    update_user_contacts(session.user_id(), &session).await?;
     Ok(())
 }
 
@@ -1331,7 +1524,7 @@ async fn rejoin_room(
 async fn leave_room(
     _: proto::LeaveRoom,
     response: Response<proto::LeaveRoom>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     leave_room_for_session(&session).await?;
     response.send(proto::Ack {})?;
@@ -1342,7 +1535,7 @@ async fn leave_room(
 async fn set_room_participant_role(
     request: proto::SetRoomParticipantRole,
     response: Response<proto::SetRoomParticipantRole>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let user_id = UserId::from_proto(request.user_id);
     let role = ChannelRole::from(request.role());
@@ -1352,7 +1545,7 @@ async fn set_room_participant_role(
             .db()
             .await
             .set_room_participant_role(
-                session.user_id,
+                session.user_id(),
                 RoomId::from_proto(request.room_id),
                 user_id,
                 role,
@@ -1390,10 +1583,10 @@ async fn set_room_participant_role(
 async fn call(
     request: proto::Call,
     response: Response<proto::Call>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let room_id = RoomId::from_proto(request.room_id);
-    let calling_user_id = session.user_id;
+    let calling_user_id = session.user_id();
     let calling_connection_id = session.connection_id;
     let called_user_id = UserId::from_proto(request.called_user_id);
     let initial_project_id = request.initial_project_id.map(ProjectId::from_proto);
@@ -1459,7 +1652,7 @@ async fn call(
 async fn cancel_call(
     request: proto::CancelCall,
     response: Response<proto::CancelCall>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let called_user_id = UserId::from_proto(request.called_user_id);
     let room_id = RoomId::from_proto(request.room_id);
@@ -1494,13 +1687,13 @@ async fn cancel_call(
 }
 
 /// Decline an incoming call.
-async fn decline_call(message: proto::DeclineCall, session: Session) -> Result<()> {
+async fn decline_call(message: proto::DeclineCall, session: UserSession) -> Result<()> {
     let room_id = RoomId::from_proto(message.room_id);
     {
         let room = session
             .db()
             .await
-            .decline_call(Some(room_id), session.user_id)
+            .decline_call(Some(room_id), session.user_id())
             .await?
             .ok_or_else(|| anyhow!("failed to decline call"))?;
         room_updated(&room, &session.peer);
@@ -1509,7 +1702,7 @@ async fn decline_call(message: proto::DeclineCall, session: Session) -> Result<(
     for connection_id in session
         .connection_pool()
         .await
-        .user_connection_ids(session.user_id)
+        .user_connection_ids(session.user_id())
     {
         session
             .peer
@@ -1521,7 +1714,7 @@ async fn decline_call(message: proto::DeclineCall, session: Session) -> Result<(
             )
             .trace_err();
     }
-    update_user_contacts(session.user_id, &session).await?;
+    update_user_contacts(session.user_id(), &session).await?;
     Ok(())
 }
 
@@ -1529,7 +1722,7 @@ async fn decline_call(message: proto::DeclineCall, session: Session) -> Result<(
 async fn update_participant_location(
     request: proto::UpdateParticipantLocation,
     response: Response<proto::UpdateParticipantLocation>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let room_id = RoomId::from_proto(request.room_id);
     let location = request
@@ -1593,7 +1786,7 @@ async fn unshare_project(message: proto::UnshareProject, session: Session) -> Re
 async fn join_project(
     request: proto::JoinProject,
     response: Response<proto::JoinProject>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let project_id = ProjectId::from_proto(request.project_id);
 
@@ -1624,7 +1817,7 @@ impl JoinProjectInternalResponse for Response<proto::JoinHostedProject> {
 
 fn join_project_internal(
     response: impl JoinProjectInternalResponse,
-    session: Session,
+    session: UserSession,
     project: &mut Project,
     replica_id: &ReplicaId,
 ) -> Result<()> {
@@ -1635,7 +1828,7 @@ fn join_project_internal(
         .map(|collaborator| collaborator.to_proto())
         .collect::<Vec<_>>();
     let project_id = project.id;
-    let guest_user_id = session.user_id;
+    let guest_user_id = session.user_id();
 
     let worktrees = project
         .worktrees
@@ -1742,7 +1935,7 @@ fn join_project_internal(
 }
 
 /// Leave someone elses shared project.
-async fn leave_project(request: proto::LeaveProject, session: Session) -> Result<()> {
+async fn leave_project(request: proto::LeaveProject, session: UserSession) -> Result<()> {
     let sender_id = session.connection_id;
     let project_id = ProjectId::from_proto(request.project_id);
     let db = session.db().await;
@@ -1769,14 +1962,14 @@ async fn leave_project(request: proto::LeaveProject, session: Session) -> Result
 async fn join_hosted_project(
     request: proto::JoinHostedProject,
     response: Response<proto::JoinHostedProject>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let (mut project, replica_id) = session
         .db()
         .await
         .join_hosted_project(
             ProjectId(request.project_id as i32),
-            session.user_id,
+            session.user_id(),
             session.connection_id,
         )
         .await?;
@@ -2087,7 +2280,7 @@ async fn broadcast_project_message_from_host<T: EntityMessage<Entity = ShareProj
 async fn follow(
     request: proto::Follow,
     response: Response<proto::Follow>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let room_id = RoomId::from_proto(request.room_id);
     let project_id = request.project_id.map(ProjectId::from_proto);
@@ -2122,7 +2315,7 @@ async fn follow(
 }
 
 /// Stop following another user in a call.
-async fn unfollow(request: proto::Unfollow, session: Session) -> Result<()> {
+async fn unfollow(request: proto::Unfollow, session: UserSession) -> Result<()> {
     let room_id = RoomId::from_proto(request.room_id);
     let project_id = request.project_id.map(ProjectId::from_proto);
     let leader_id = request
@@ -2154,7 +2347,7 @@ async fn unfollow(request: proto::Unfollow, session: Session) -> Result<()> {
 }
 
 /// Notify everyone following you of your current location.
-async fn update_followers(request: proto::UpdateFollowers, session: Session) -> Result<()> {
+async fn update_followers(request: proto::UpdateFollowers, session: UserSession) -> Result<()> {
     let room_id = RoomId::from_proto(request.room_id);
     let database = session.db.lock().await;
 
@@ -2216,7 +2409,7 @@ async fn get_users(
 async fn fuzzy_search_users(
     request: proto::FuzzySearchUsers,
     response: Response<proto::FuzzySearchUsers>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let query = request.query;
     let users = match query.len() {
@@ -2232,7 +2425,7 @@ async fn fuzzy_search_users(
     };
     let users = users
         .into_iter()
-        .filter(|user| user.id != session.user_id)
+        .filter(|user| user.id != session.user_id())
         .map(|user| proto::User {
             id: user.id.to_proto(),
             avatar_url: format!("https://github.com/{}.png?size=128", user.github_login),
@@ -2247,9 +2440,9 @@ async fn fuzzy_search_users(
 async fn request_contact(
     request: proto::RequestContact,
     response: Response<proto::RequestContact>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
-    let requester_id = session.user_id;
+    let requester_id = session.user_id();
     let responder_id = UserId::from_proto(request.responder_id);
     if requester_id == responder_id {
         return Err(anyhow!("cannot add yourself as a contact"))?;
@@ -2294,9 +2487,9 @@ async fn request_contact(
 async fn respond_to_contact_request(
     request: proto::RespondToContactRequest,
     response: Response<proto::RespondToContactRequest>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
-    let responder_id = session.user_id;
+    let responder_id = session.user_id();
     let requester_id = UserId::from_proto(request.requester_id);
     let db = session.db().await;
     if request.response == proto::ContactRequestResponse::Dismiss as i32 {
@@ -2352,9 +2545,9 @@ async fn respond_to_contact_request(
 async fn remove_contact(
     request: proto::RemoveContact,
     response: Response<proto::RemoveContact>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
-    let requester_id = session.user_id;
+    let requester_id = session.user_id();
     let responder_id = UserId::from_proto(request.user_id);
     let db = session.db().await;
     let (contact_accepted, deleted_notification_id) =
@@ -2403,13 +2596,13 @@ async fn remove_contact(
 async fn create_channel(
     request: proto::CreateChannel,
     response: Response<proto::CreateChannel>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let db = session.db().await;
 
     let parent_id = request.parent_id.map(|id| ChannelId::from_proto(id));
     let (channel, membership) = db
-        .create_channel(&request.name, parent_id, session.user_id)
+        .create_channel(&request.name, parent_id, session.user_id())
         .await?;
 
     let root_id = channel.root_id();
@@ -2458,13 +2651,13 @@ async fn create_channel(
 async fn delete_channel(
     request: proto::DeleteChannel,
     response: Response<proto::DeleteChannel>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let db = session.db().await;
 
     let channel_id = request.channel_id;
     let (root_channel, removed_channels) = db
-        .delete_channel(ChannelId::from_proto(channel_id), session.user_id)
+        .delete_channel(ChannelId::from_proto(channel_id), session.user_id())
         .await?;
     response.send(proto::Ack {})?;
 
@@ -2486,7 +2679,7 @@ async fn delete_channel(
 async fn invite_channel_member(
     request: proto::InviteChannelMember,
     response: Response<proto::InviteChannelMember>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let db = session.db().await;
     let channel_id = ChannelId::from_proto(request.channel_id);
@@ -2498,7 +2691,7 @@ async fn invite_channel_member(
         .invite_channel_member(
             channel_id,
             invitee_id,
-            session.user_id,
+            session.user_id(),
             request.role().into(),
         )
         .await?;
@@ -2523,7 +2716,7 @@ async fn invite_channel_member(
 async fn remove_channel_member(
     request: proto::RemoveChannelMember,
     response: Response<proto::RemoveChannelMember>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let db = session.db().await;
     let channel_id = ChannelId::from_proto(request.channel_id);
@@ -2533,7 +2726,7 @@ async fn remove_channel_member(
         membership_update,
         notification_id,
     } = db
-        .remove_channel_member(channel_id, member_id, session.user_id)
+        .remove_channel_member(channel_id, member_id, session.user_id())
         .await?;
 
     let mut connection_pool = session.connection_pool().await;
@@ -2567,14 +2760,14 @@ async fn remove_channel_member(
 async fn set_channel_visibility(
     request: proto::SetChannelVisibility,
     response: Response<proto::SetChannelVisibility>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let db = session.db().await;
     let channel_id = ChannelId::from_proto(request.channel_id);
     let visibility = request.visibility().into();
 
     let channel_model = db
-        .set_channel_visibility(channel_id, visibility, session.user_id)
+        .set_channel_visibility(channel_id, visibility, session.user_id())
         .await?;
     let root_id = channel_model.root_id();
     let channel = Channel::from_model(channel_model);
@@ -2612,7 +2805,7 @@ async fn set_channel_visibility(
 async fn set_channel_member_role(
     request: proto::SetChannelMemberRole,
     response: Response<proto::SetChannelMemberRole>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let db = session.db().await;
     let channel_id = ChannelId::from_proto(request.channel_id);
@@ -2620,7 +2813,7 @@ async fn set_channel_member_role(
     let result = db
         .set_channel_member_role(
             channel_id,
-            session.user_id,
+            session.user_id(),
             member_id,
             request.role().into(),
         )
@@ -2660,12 +2853,12 @@ async fn set_channel_member_role(
 async fn rename_channel(
     request: proto::RenameChannel,
     response: Response<proto::RenameChannel>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let db = session.db().await;
     let channel_id = ChannelId::from_proto(request.channel_id);
     let channel_model = db
-        .rename_channel(channel_id, session.user_id, &request.name)
+        .rename_channel(channel_id, session.user_id(), &request.name)
         .await?;
     let root_id = channel_model.root_id();
     let channel = Channel::from_model(channel_model);
@@ -2692,7 +2885,7 @@ async fn rename_channel(
 async fn move_channel(
     request: proto::MoveChannel,
     response: Response<proto::MoveChannel>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let channel_id = ChannelId::from_proto(request.channel_id);
     let to = ChannelId::from_proto(request.to);
@@ -2700,7 +2893,7 @@ async fn move_channel(
     let (root_id, channels) = session
         .db()
         .await
-        .move_channel(channel_id, to, session.user_id)
+        .move_channel(channel_id, to, session.user_id())
         .await?;
 
     let connection_pool = session.connection_pool().await;
@@ -2735,12 +2928,12 @@ async fn move_channel(
 async fn get_channel_members(
     request: proto::GetChannelMembers,
     response: Response<proto::GetChannelMembers>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let db = session.db().await;
     let channel_id = ChannelId::from_proto(request.channel_id);
     let members = db
-        .get_channel_participant_details(channel_id, session.user_id)
+        .get_channel_participant_details(channel_id, session.user_id())
         .await?;
     response.send(proto::GetChannelMembersResponse { members })?;
     Ok(())
@@ -2750,7 +2943,7 @@ async fn get_channel_members(
 async fn respond_to_channel_invite(
     request: proto::RespondToChannelInvite,
     response: Response<proto::RespondToChannelInvite>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let db = session.db().await;
     let channel_id = ChannelId::from_proto(request.channel_id);
@@ -2758,7 +2951,7 @@ async fn respond_to_channel_invite(
         membership_update,
         notifications,
     } = db
-        .respond_to_channel_invite(channel_id, session.user_id, request.accept)
+        .respond_to_channel_invite(channel_id, session.user_id(), request.accept)
         .await?;
 
     let mut connection_pool = session.connection_pool().await;
@@ -2766,7 +2959,7 @@ async fn respond_to_channel_invite(
         notify_membership_updated(
             &mut connection_pool,
             membership_update,
-            session.user_id,
+            session.user_id(),
             &session.peer,
         );
     } else {
@@ -2775,7 +2968,7 @@ async fn respond_to_channel_invite(
             ..Default::default()
         };
 
-        for connection_id in connection_pool.user_connection_ids(session.user_id) {
+        for connection_id in connection_pool.user_connection_ids(session.user_id()) {
             session.peer.send(connection_id, update.clone())?;
         }
     };
@@ -2791,7 +2984,7 @@ async fn respond_to_channel_invite(
 async fn join_channel(
     request: proto::JoinChannel,
     response: Response<proto::JoinChannel>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let channel_id = ChannelId::from_proto(request.channel_id);
     join_channel_internal(channel_id, Box::new(response), session).await
@@ -2814,14 +3007,14 @@ impl JoinChannelInternalResponse for Response<proto::JoinRoom> {
 async fn join_channel_internal(
     channel_id: ChannelId,
     response: Box<impl JoinChannelInternalResponse>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let joined_room = {
         leave_room_for_session(&session).await?;
         let db = session.db().await;
 
         let (joined_room, membership_updated, role) = db
-            .join_channel(channel_id, session.user_id, session.connection_id)
+            .join_channel(channel_id, session.user_id(), session.connection_id)
             .await?;
 
         let live_kit_connection_info = session.live_kit_client.as_ref().and_then(|live_kit| {
@@ -2831,7 +3024,7 @@ async fn join_channel_internal(
                     live_kit
                         .guest_token(
                             &joined_room.room.live_kit_room,
-                            &session.user_id.to_string(),
+                            &session.user_id().to_string(),
                         )
                         .trace_err()?,
                 )
@@ -2841,7 +3034,7 @@ async fn join_channel_internal(
                     live_kit
                         .room_token(
                             &joined_room.room.live_kit_room,
-                            &session.user_id.to_string(),
+                            &session.user_id().to_string(),
                         )
                         .trace_err()?,
                 )
@@ -2868,7 +3061,7 @@ async fn join_channel_internal(
             notify_membership_updated(
                 &mut connection_pool,
                 membership_updated,
-                session.user_id,
+                session.user_id(),
                 &session.peer,
             );
         }
@@ -2887,7 +3080,7 @@ async fn join_channel_internal(
         &*session.connection_pool().await,
     );
 
-    update_user_contacts(session.user_id, &session).await?;
+    update_user_contacts(session.user_id(), &session).await?;
     Ok(())
 }
 
@@ -2895,13 +3088,13 @@ async fn join_channel_internal(
 async fn join_channel_buffer(
     request: proto::JoinChannelBuffer,
     response: Response<proto::JoinChannelBuffer>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let db = session.db().await;
     let channel_id = ChannelId::from_proto(request.channel_id);
 
     let open_response = db
-        .join_channel_buffer(channel_id, session.user_id, session.connection_id)
+        .join_channel_buffer(channel_id, session.user_id(), session.connection_id)
         .await?;
 
     let collaborators = open_response.collaborators.clone();
@@ -2926,13 +3119,13 @@ async fn join_channel_buffer(
 /// Edit the channel notes
 async fn update_channel_buffer(
     request: proto::UpdateChannelBuffer,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let db = session.db().await;
     let channel_id = ChannelId::from_proto(request.channel_id);
 
     let (collaborators, non_collaborators, epoch, version) = db
-        .update_channel_buffer(channel_id, session.user_id, &request.operations)
+        .update_channel_buffer(channel_id, session.user_id(), &request.operations)
         .await?;
 
     channel_buffer_updated(
@@ -2974,11 +3167,11 @@ async fn update_channel_buffer(
 async fn rejoin_channel_buffers(
     request: proto::RejoinChannelBuffers,
     response: Response<proto::RejoinChannelBuffers>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let db = session.db().await;
     let buffers = db
-        .rejoin_channel_buffers(&request.buffers, session.user_id, session.connection_id)
+        .rejoin_channel_buffers(&request.buffers, session.user_id(), session.connection_id)
         .await?;
 
     for rejoined_buffer in &buffers {
@@ -3009,7 +3202,7 @@ async fn rejoin_channel_buffers(
 async fn leave_channel_buffer(
     request: proto::LeaveChannelBuffer,
     response: Response<proto::LeaveChannelBuffer>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let db = session.db().await;
     let channel_id = ChannelId::from_proto(request.channel_id);
@@ -3071,7 +3264,7 @@ fn send_notifications(
 async fn send_channel_message(
     request: proto::SendChannelMessage,
     response: Response<proto::SendChannelMessage>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     // Validate the message body.
     let body = request.body.trim().to_string();
@@ -3100,7 +3293,7 @@ async fn send_channel_message(
         .await
         .create_channel_message(
             channel_id,
-            session.user_id,
+            session.user_id(),
             &body,
             &request.mentions,
             timestamp,
@@ -3111,14 +3304,16 @@ async fn send_channel_message(
             },
         )
         .await?;
+
     let message = proto::ChannelMessage {
-        sender_id: session.user_id.to_proto(),
+        sender_id: session.user_id().to_proto(),
         id: message_id.to_proto(),
         body,
         mentions: request.mentions,
         timestamp: timestamp.unix_timestamp() as u64,
         nonce: Some(nonce),
         reply_to_message_id: request.reply_to_message_id,
+        edited_at: None,
     };
     broadcast(
         Some(session.connection_id),
@@ -3165,14 +3360,14 @@ async fn send_channel_message(
 async fn remove_channel_message(
     request: proto::RemoveChannelMessage,
     response: Response<proto::RemoveChannelMessage>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let channel_id = ChannelId::from_proto(request.channel_id);
     let message_id = MessageId::from_proto(request.message_id);
     let connection_ids = session
         .db()
         .await
-        .remove_channel_message(channel_id, message_id, session.user_id)
+        .remove_channel_message(channel_id, message_id, session.user_id())
         .await?;
     broadcast(Some(session.connection_id), connection_ids, |connection| {
         session.peer.send(connection, request.clone())
@@ -3181,17 +3376,82 @@ async fn remove_channel_message(
     Ok(())
 }
 
+async fn update_channel_message(
+    request: proto::UpdateChannelMessage,
+    response: Response<proto::UpdateChannelMessage>,
+    session: UserSession,
+) -> Result<()> {
+    let channel_id = ChannelId::from_proto(request.channel_id);
+    let message_id = MessageId::from_proto(request.message_id);
+    let updated_at = OffsetDateTime::now_utc();
+    let UpdatedChannelMessage {
+        message_id,
+        participant_connection_ids,
+        notifications,
+        reply_to_message_id,
+        timestamp,
+    } = session
+        .db()
+        .await
+        .update_channel_message(
+            channel_id,
+            message_id,
+            session.user_id(),
+            request.body.as_str(),
+            &request.mentions,
+            updated_at,
+        )
+        .await?;
+
+    let nonce = request
+        .nonce
+        .clone()
+        .ok_or_else(|| anyhow!("nonce can't be blank"))?;
+
+    let message = proto::ChannelMessage {
+        sender_id: session.user_id().to_proto(),
+        id: message_id.to_proto(),
+        body: request.body.clone(),
+        mentions: request.mentions.clone(),
+        timestamp: timestamp.assume_utc().unix_timestamp() as u64,
+        nonce: Some(nonce),
+        reply_to_message_id: reply_to_message_id.map(|id| id.to_proto()),
+        edited_at: Some(updated_at.unix_timestamp() as u64),
+    };
+
+    response.send(proto::Ack {})?;
+
+    let pool = &*session.connection_pool().await;
+    broadcast(
+        Some(session.connection_id),
+        participant_connection_ids,
+        |connection| {
+            session.peer.send(
+                connection,
+                proto::ChannelMessageUpdate {
+                    channel_id: channel_id.to_proto(),
+                    message: Some(message.clone()),
+                },
+            )
+        },
+    );
+
+    send_notifications(pool, &session.peer, notifications);
+
+    Ok(())
+}
+
 /// Mark a channel message as read
 async fn acknowledge_channel_message(
     request: proto::AckChannelMessage,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let channel_id = ChannelId::from_proto(request.channel_id);
     let message_id = MessageId::from_proto(request.message_id);
     let notifications = session
         .db()
         .await
-        .observe_channel_message(channel_id, session.user_id, message_id)
+        .observe_channel_message(channel_id, session.user_id(), message_id)
         .await?;
     send_notifications(
         &*session.connection_pool().await,
@@ -3204,7 +3464,7 @@ async fn acknowledge_channel_message(
 /// Mark a buffer version as synced
 async fn acknowledge_buffer_version(
     request: proto::AckBufferOperation,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let buffer_id = BufferId::from_proto(request.buffer_id);
     session
@@ -3212,7 +3472,7 @@ async fn acknowledge_buffer_version(
         .await
         .observe_buffer_version(
             buffer_id,
-            session.user_id,
+            session.user_id(),
             request.epoch as i32,
             &request.version,
         )
@@ -3220,19 +3480,223 @@ async fn acknowledge_buffer_version(
     Ok(())
 }
 
+struct CompleteWithLanguageModelRateLimit;
+
+impl RateLimit for CompleteWithLanguageModelRateLimit {
+    fn capacity() -> usize {
+        std::env::var("COMPLETE_WITH_LANGUAGE_MODEL_RATE_LIMIT_PER_HOUR")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(120) // Picked arbitrarily
+    }
+
+    fn refill_duration() -> chrono::Duration {
+        chrono::Duration::hours(1)
+    }
+
+    fn db_name() -> &'static str {
+        "complete-with-language-model"
+    }
+}
+
+async fn complete_with_language_model(
+    request: proto::CompleteWithLanguageModel,
+    response: StreamingResponse<proto::CompleteWithLanguageModel>,
+    session: Session,
+    open_ai_api_key: Option<Arc<str>>,
+    google_ai_api_key: Option<Arc<str>>,
+) -> Result<()> {
+    let Some(session) = session.for_user() else {
+        return Err(anyhow!("user not found"))?;
+    };
+    authorize_access_to_language_models(&session).await?;
+    session
+        .rate_limiter
+        .check::<CompleteWithLanguageModelRateLimit>(session.user_id())
+        .await?;
+
+    if request.model.starts_with("gpt") {
+        let api_key =
+            open_ai_api_key.ok_or_else(|| anyhow!("no OpenAI API key configured on the server"))?;
+        complete_with_open_ai(request, response, session, api_key).await?;
+    } else if request.model.starts_with("gemini") {
+        let api_key = google_ai_api_key
+            .ok_or_else(|| anyhow!("no Google AI API key configured on the server"))?;
+        complete_with_google_ai(request, response, session, api_key).await?;
+    }
+
+    Ok(())
+}
+
+async fn complete_with_open_ai(
+    request: proto::CompleteWithLanguageModel,
+    response: StreamingResponse<proto::CompleteWithLanguageModel>,
+    session: UserSession,
+    api_key: Arc<str>,
+) -> Result<()> {
+    const OPEN_AI_API_URL: &str = "https://api.openai.com/v1";
+
+    let mut completion_stream = open_ai::stream_completion(
+        &session.http_client,
+        OPEN_AI_API_URL,
+        &api_key,
+        crate::ai::language_model_request_to_open_ai(request)?,
+    )
+    .await
+    .context("open_ai::stream_completion request failed")?;
+
+    while let Some(event) = completion_stream.next().await {
+        let event = event?;
+        response.send(proto::LanguageModelResponse {
+            choices: event
+                .choices
+                .into_iter()
+                .map(|choice| proto::LanguageModelChoiceDelta {
+                    index: choice.index,
+                    delta: Some(proto::LanguageModelResponseMessage {
+                        role: choice.delta.role.map(|role| match role {
+                            open_ai::Role::User => LanguageModelRole::LanguageModelUser,
+                            open_ai::Role::Assistant => LanguageModelRole::LanguageModelAssistant,
+                            open_ai::Role::System => LanguageModelRole::LanguageModelSystem,
+                        } as i32),
+                        content: choice.delta.content,
+                    }),
+                    finish_reason: choice.finish_reason,
+                })
+                .collect(),
+        })?;
+    }
+
+    Ok(())
+}
+
+async fn complete_with_google_ai(
+    request: proto::CompleteWithLanguageModel,
+    response: StreamingResponse<proto::CompleteWithLanguageModel>,
+    session: UserSession,
+    api_key: Arc<str>,
+) -> Result<()> {
+    let mut stream = google_ai::stream_generate_content(
+        &session.http_client,
+        google_ai::API_URL,
+        api_key.as_ref(),
+        crate::ai::language_model_request_to_google_ai(request)?,
+    )
+    .await
+    .context("google_ai::stream_generate_content request failed")?;
+
+    while let Some(event) = stream.next().await {
+        let event = event?;
+        response.send(proto::LanguageModelResponse {
+            choices: event
+                .candidates
+                .unwrap_or_default()
+                .into_iter()
+                .map(|candidate| proto::LanguageModelChoiceDelta {
+                    index: candidate.index as u32,
+                    delta: Some(proto::LanguageModelResponseMessage {
+                        role: Some(match candidate.content.role {
+                            google_ai::Role::User => LanguageModelRole::LanguageModelUser,
+                            google_ai::Role::Model => LanguageModelRole::LanguageModelAssistant,
+                        } as i32),
+                        content: Some(
+                            candidate
+                                .content
+                                .parts
+                                .into_iter()
+                                .filter_map(|part| match part {
+                                    google_ai::Part::TextPart(part) => Some(part.text),
+                                    google_ai::Part::InlineDataPart(_) => None,
+                                })
+                                .collect(),
+                        ),
+                    }),
+                    finish_reason: candidate.finish_reason.map(|reason| reason.to_string()),
+                })
+                .collect(),
+        })?;
+    }
+
+    Ok(())
+}
+
+struct CountTokensWithLanguageModelRateLimit;
+
+impl RateLimit for CountTokensWithLanguageModelRateLimit {
+    fn capacity() -> usize {
+        std::env::var("COUNT_TOKENS_WITH_LANGUAGE_MODEL_RATE_LIMIT_PER_HOUR")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(600) // Picked arbitrarily
+    }
+
+    fn refill_duration() -> chrono::Duration {
+        chrono::Duration::hours(1)
+    }
+
+    fn db_name() -> &'static str {
+        "count-tokens-with-language-model"
+    }
+}
+
+async fn count_tokens_with_language_model(
+    request: proto::CountTokensWithLanguageModel,
+    response: Response<proto::CountTokensWithLanguageModel>,
+    session: UserSession,
+    google_ai_api_key: Option<Arc<str>>,
+) -> Result<()> {
+    authorize_access_to_language_models(&session).await?;
+
+    if !request.model.starts_with("gemini") {
+        return Err(anyhow!(
+            "counting tokens for model: {:?} is not supported",
+            request.model
+        ))?;
+    }
+
+    session
+        .rate_limiter
+        .check::<CountTokensWithLanguageModelRateLimit>(session.user_id())
+        .await?;
+
+    let api_key = google_ai_api_key
+        .ok_or_else(|| anyhow!("no Google AI API key configured on the server"))?;
+    let tokens_response = google_ai::count_tokens(
+        &session.http_client,
+        google_ai::API_URL,
+        &api_key,
+        crate::ai::count_tokens_request_to_google_ai(request)?,
+    )
+    .await?;
+    response.send(proto::CountTokensResponse {
+        token_count: tokens_response.total_tokens as u32,
+    })?;
+    Ok(())
+}
+
+async fn authorize_access_to_language_models(session: &UserSession) -> Result<(), Error> {
+    let db = session.db().await;
+    let flags = db.get_user_flags(session.user_id()).await?;
+    if flags.iter().any(|flag| flag == "language-models") {
+        Ok(())
+    } else {
+        Err(anyhow!("permission denied"))?
+    }
+}
+
 /// Start receiving chat updates for a channel
 async fn join_channel_chat(
     request: proto::JoinChannelChat,
     response: Response<proto::JoinChannelChat>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let channel_id = ChannelId::from_proto(request.channel_id);
 
     let db = session.db().await;
-    db.join_channel_chat(channel_id, session.connection_id, session.user_id)
+    db.join_channel_chat(channel_id, session.connection_id, session.user_id())
         .await?;
     let messages = db
-        .get_channel_messages(channel_id, session.user_id, MESSAGE_COUNT_PER_PAGE, None)
+        .get_channel_messages(channel_id, session.user_id(), MESSAGE_COUNT_PER_PAGE, None)
         .await?;
     response.send(proto::JoinChannelChatResponse {
         done: messages.len() < MESSAGE_COUNT_PER_PAGE,
@@ -3242,12 +3706,12 @@ async fn join_channel_chat(
 }
 
 /// Stop receiving chat updates for a channel
-async fn leave_channel_chat(request: proto::LeaveChannelChat, session: Session) -> Result<()> {
+async fn leave_channel_chat(request: proto::LeaveChannelChat, session: UserSession) -> Result<()> {
     let channel_id = ChannelId::from_proto(request.channel_id);
     session
         .db()
         .await
-        .leave_channel_chat(channel_id, session.connection_id, session.user_id)
+        .leave_channel_chat(channel_id, session.connection_id, session.user_id())
         .await?;
     Ok(())
 }
@@ -3256,7 +3720,7 @@ async fn leave_channel_chat(request: proto::LeaveChannelChat, session: Session) 
 async fn get_channel_messages(
     request: proto::GetChannelMessages,
     response: Response<proto::GetChannelMessages>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let channel_id = ChannelId::from_proto(request.channel_id);
     let messages = session
@@ -3264,7 +3728,7 @@ async fn get_channel_messages(
         .await
         .get_channel_messages(
             channel_id,
-            session.user_id,
+            session.user_id(),
             MESSAGE_COUNT_PER_PAGE,
             Some(MessageId::from_proto(request.before_message_id)),
         )
@@ -3280,7 +3744,7 @@ async fn get_channel_messages(
 async fn get_channel_messages_by_id(
     request: proto::GetChannelMessagesById,
     response: Response<proto::GetChannelMessagesById>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let message_ids = request
         .message_ids
@@ -3290,7 +3754,7 @@ async fn get_channel_messages_by_id(
     let messages = session
         .db()
         .await
-        .get_channel_messages_by_id(session.user_id, &message_ids)
+        .get_channel_messages_by_id(session.user_id(), &message_ids)
         .await?;
     response.send(proto::GetChannelMessagesResponse {
         done: messages.len() < MESSAGE_COUNT_PER_PAGE,
@@ -3303,13 +3767,13 @@ async fn get_channel_messages_by_id(
 async fn get_notifications(
     request: proto::GetNotifications,
     response: Response<proto::GetNotifications>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let notifications = session
         .db()
         .await
         .get_notifications(
-            session.user_id,
+            session.user_id(),
             NOTIFICATION_COUNT_PER_PAGE,
             request
                 .before_id
@@ -3327,12 +3791,12 @@ async fn get_notifications(
 async fn mark_notification_as_read(
     request: proto::MarkNotificationRead,
     response: Response<proto::MarkNotificationRead>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let database = &session.db().await;
     let notifications = database
         .mark_notification_as_read_by_id(
-            session.user_id,
+            session.user_id(),
             NotificationId::from_proto(request.notification_id),
         )
         .await?;
@@ -3349,16 +3813,16 @@ async fn mark_notification_as_read(
 async fn get_private_user_info(
     _request: proto::GetPrivateUserInfo,
     response: Response<proto::GetPrivateUserInfo>,
-    session: Session,
+    session: UserSession,
 ) -> Result<()> {
     let db = session.db().await;
 
-    let metrics_id = db.get_user_metrics_id(session.user_id).await?;
+    let metrics_id = db.get_user_metrics_id(session.user_id()).await?;
     let user = db
-        .get_user_by_id(session.user_id)
+        .get_user_by_id(session.user_id())
         .await?
         .ok_or_else(|| anyhow!("user not found"))?;
-    let flags = db.get_user_flags(session.user_id).await?;
+    let flags = db.get_user_flags(session.user_id()).await?;
 
     response.send(proto::GetPrivateUserInfoResponse {
         metrics_id,
@@ -3602,7 +4066,7 @@ async fn update_user_contacts(user_id: UserId, session: &Session) -> Result<()> 
     Ok(())
 }
 
-async fn leave_room_for_session(session: &Session) -> Result<()> {
+async fn leave_room_for_session(session: &UserSession) -> Result<()> {
     let mut contacts_to_update = HashSet::default();
 
     let room_id;
@@ -3613,7 +4077,7 @@ async fn leave_room_for_session(session: &Session) -> Result<()> {
     let channel;
 
     if let Some(mut left_room) = session.db().await.leave_room(session.connection_id).await? {
-        contacts_to_update.insert(session.user_id);
+        contacts_to_update.insert(session.user_id());
 
         for project in left_room.left_projects.values() {
             project_left(project, session);
@@ -3664,7 +4128,7 @@ async fn leave_room_for_session(session: &Session) -> Result<()> {
 
     if let Some(live_kit) = session.live_kit_client.as_ref() {
         live_kit
-            .remove_participant(live_kit_room.clone(), session.user_id.to_string())
+            .remove_participant(live_kit_room.clone(), session.user_id().to_string())
             .await
             .trace_err();
 
@@ -3698,9 +4162,9 @@ async fn leave_channel_buffers_for_session(session: &Session) -> Result<()> {
     Ok(())
 }
 
-fn project_left(project: &db::LeftProject, session: &Session) {
+fn project_left(project: &db::LeftProject, session: &UserSession) {
     for connection_id in &project.connection_ids {
-        if project.host_user_id == Some(session.user_id) {
+        if project.host_user_id == Some(session.user_id()) {
             session
                 .peer
                 .send(

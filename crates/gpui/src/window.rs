@@ -1,13 +1,14 @@
 use crate::{
     point, px, size, transparent_black, Action, AnyDrag, AnyView, AppContext, Arena,
-    AsyncWindowContext, Bounds, Context, Corners, CursorStyle, DispatchActionListener,
-    DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity, EntityId, EventEmitter,
-    FileDropEvent, Flatten, Global, GlobalElementId, GlobalPixels, Hsla, KeyBinding, KeyDownEvent,
-    KeyMatch, KeymatchResult, Keystroke, KeystrokeEvent, Model, ModelContext, Modifiers,
-    MouseButton, MouseMoveEvent, MouseUpEvent, Pixels, PlatformAtlas, PlatformDisplay,
-    PlatformInput, PlatformWindow, Point, PromptLevel, Render, ScaledPixels, SharedString, Size,
-    SubscriberSet, Subscription, TaffyLayoutEngine, Task, TextStyle, TextStyleRefinement, View,
-    VisualContext, WeakView, WindowAppearance, WindowOptions, WindowParams, WindowTextSystem,
+    AsyncWindowContext, Bounds, Context, Corners, CursorStyle, DevicePixels,
+    DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
+    EntityId, EventEmitter, FileDropEvent, Flatten, Global, GlobalElementId, Hsla, KeyBinding,
+    KeyDownEvent, KeyMatch, KeymatchResult, Keystroke, KeystrokeEvent, Model, ModelContext,
+    Modifiers, ModifiersChangedEvent, MouseButton, MouseMoveEvent, MouseUpEvent, Pixels,
+    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformWindow, Point, PromptLevel, Render,
+    ScaledPixels, SharedString, Size, SubscriberSet, Subscription, TaffyLayoutEngine, Task,
+    TextStyle, TextStyleRefinement, View, VisualContext, WeakView, WindowAppearance, WindowOptions,
+    WindowParams, WindowTextSystem,
 };
 use anyhow::{anyhow, Context as _, Result};
 use collections::FxHashSet;
@@ -357,26 +358,27 @@ pub(crate) struct ElementStateBox {
     pub(crate) type_name: &'static str,
 }
 
-fn default_bounds(cx: &mut AppContext) -> Bounds<GlobalPixels> {
-    const DEFAULT_WINDOW_SIZE: Size<GlobalPixels> = size(GlobalPixels(1024.0), GlobalPixels(700.0));
-    const DEFAULT_WINDOW_OFFSET: Point<GlobalPixels> = point(GlobalPixels(0.0), GlobalPixels(35.0));
+fn default_bounds(display_id: Option<DisplayId>, cx: &mut AppContext) -> Bounds<DevicePixels> {
+    const DEFAULT_WINDOW_SIZE: Size<DevicePixels> = size(DevicePixels(1024), DevicePixels(700));
+    const DEFAULT_WINDOW_OFFSET: Point<DevicePixels> = point(DevicePixels(0), DevicePixels(35));
 
     cx.active_window()
         .and_then(|w| w.update(cx, |_, cx| cx.window_bounds()).ok())
         .map(|bounds| bounds.map_origin(|origin| origin + DEFAULT_WINDOW_OFFSET))
         .unwrap_or_else(|| {
-            cx.primary_display()
+            let display = display_id
+                .map(|id| cx.find_display(id))
+                .unwrap_or_else(|| cx.primary_display());
+
+            display
                 .map(|display| {
                     let center = display.bounds().center();
-                    let offset = DEFAULT_WINDOW_SIZE / 2.0;
+                    let offset = DEFAULT_WINDOW_SIZE / 2;
                     let origin = point(center.x - offset.width, center.y - offset.height);
                     Bounds::new(origin, DEFAULT_WINDOW_SIZE)
                 })
                 .unwrap_or_else(|| {
-                    Bounds::new(
-                        point(GlobalPixels(0.0), GlobalPixels(0.0)),
-                        DEFAULT_WINDOW_SIZE,
-                    )
+                    Bounds::new(point(DevicePixels(0), DevicePixels(0)), DEFAULT_WINDOW_SIZE)
                 })
         })
 }
@@ -398,7 +400,7 @@ impl Window {
             fullscreen,
         } = options;
 
-        let bounds = bounds.unwrap_or_else(|| default_bounds(cx));
+        let bounds = bounds.unwrap_or_else(|| default_bounds(display_id, cx));
         let platform_window = cx.platform.open_window(
             handle,
             WindowParams {
@@ -420,7 +422,7 @@ impl Window {
         let appearance = platform_window.appearance();
         let text_system = Arc::new(WindowTextSystem::new(cx.text_system().clone()));
         let dirty = Rc::new(Cell::new(true));
-        let active = Rc::new(Cell::new(false));
+        let active = Rc::new(Cell::new(platform_window.is_active()));
         let needs_present = Rc::new(Cell::new(false));
         let next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>> = Default::default();
         let last_input_timestamp = Rc::new(Cell::new(Instant::now()));
@@ -631,6 +633,28 @@ impl<'a> WindowContext<'a> {
         }
     }
 
+    /// Indicate that this view has changed, which will invoke any observers and also mark the window as dirty.
+    /// If this view or any of its ancestors are *cached*, notifying it will cause it or its ancestors to be redrawn.
+    pub fn notify(&mut self, view_id: EntityId) {
+        for view_id in self
+            .window
+            .rendered_frame
+            .dispatch_tree
+            .view_path(view_id)
+            .into_iter()
+            .rev()
+        {
+            if !self.window.dirty_views.insert(view_id) {
+                break;
+            }
+        }
+
+        if self.window.draw_phase == DrawPhase::None {
+            self.window.dirty.set(true);
+            self.app.push_effect(Effect::Notify { emitter: view_id });
+        }
+    }
+
     /// Close this window.
     pub fn remove_window(&mut self) {
         self.window.removed = true;
@@ -697,6 +721,12 @@ impl<'a> WindowContext<'a> {
     /// On some platforms (namely Windows) this is different than the bounds being the size of the display
     pub fn is_maximized(&self) -> bool {
         self.window.platform_window.is_maximized()
+    }
+
+    /// Check if the platform window is minimized
+    /// On some platforms (namely Windows) the position is incorrect when minimized
+    pub fn is_minimized(&self) -> bool {
+        self.window.platform_window.is_minimized()
     }
 
     /// Dispatch the given action on the currently focused element.
@@ -825,18 +855,6 @@ impl<'a> WindowContext<'a> {
             .spawn(|app| f(AsyncWindowContext::new(app, self.window.handle)))
     }
 
-    /// Updates the global of the given type. The given closure is given simultaneous mutable
-    /// access both to the global and the context.
-    pub fn update_global<G, R>(&mut self, f: impl FnOnce(&mut G, &mut Self) -> R) -> R
-    where
-        G: Global,
-    {
-        let mut global = self.app.lease_global::<G>();
-        let result = f(&mut global, self);
-        self.app.end_global_lease(global);
-        result
-    }
-
     fn window_bounds_changed(&mut self) {
         self.window.scale_factor = self.window.platform_window.scale_factor();
         self.window.viewport_size = self.window.platform_window.content_size();
@@ -850,7 +868,7 @@ impl<'a> WindowContext<'a> {
     }
 
     /// Returns the bounds of the current window in the global coordinate space, which could span across multiple displays.
-    pub fn window_bounds(&self) -> Bounds<GlobalPixels> {
+    pub fn window_bounds(&self) -> Bounds<DevicePixels> {
         self.window.platform_window.bounds()
     }
 
@@ -1359,6 +1377,11 @@ impl<'a> WindowContext<'a> {
             return;
         }
 
+        self.dispatch_modifiers_changed_event(event, &dispatch_path);
+        if !self.propagate_event {
+            return;
+        }
+
         self.dispatch_keystroke_observers(event, None);
     }
 
@@ -1388,6 +1411,27 @@ impl<'a> WindowContext<'a> {
             for key_listener in node.key_listeners.clone() {
                 self.with_element_context(|cx| {
                     key_listener(event, DispatchPhase::Bubble, cx);
+                });
+                if !self.propagate_event {
+                    return;
+                }
+            }
+        }
+    }
+
+    fn dispatch_modifiers_changed_event(
+        &mut self,
+        event: &dyn Any,
+        dispatch_path: &SmallVec<[DispatchNodeId; 32]>,
+    ) {
+        let Some(event) = event.downcast_ref::<ModifiersChangedEvent>() else {
+            return;
+        };
+        for node_id in dispatch_path.iter().rev() {
+            let node = self.window.rendered_frame.dispatch_tree.node(*node_id);
+            for listener in node.modifiers_changed_listeners.clone() {
+                self.with_element_context(|cx| {
+                    listener(event, cx);
                 });
                 if !self.propagate_event {
                     return;
@@ -2172,25 +2216,7 @@ impl<'a, V: 'static> ViewContext<'a, V> {
     /// Indicate that this view has changed, which will invoke any observers and also mark the window as dirty.
     /// If this view or any of its ancestors are *cached*, notifying it will cause it or its ancestors to be redrawn.
     pub fn notify(&mut self) {
-        for view_id in self
-            .window
-            .rendered_frame
-            .dispatch_tree
-            .view_path(self.view.entity_id())
-            .into_iter()
-            .rev()
-        {
-            if !self.window.dirty_views.insert(view_id) {
-                break;
-            }
-        }
-
-        if self.window.draw_phase == DrawPhase::None {
-            self.window_cx.window.dirty.set(true);
-            self.window_cx.app.push_effect(Effect::Notify {
-                emitter: self.view.model.entity_id,
-            });
-        }
+        self.window_cx.notify(self.view.entity_id());
     }
 
     /// Register a callback to be invoked when the window is resized.
@@ -2362,17 +2388,6 @@ impl<'a, V: 'static> ViewContext<'a, V> {
     {
         let view = self.view().downgrade();
         self.window_cx.spawn(|cx| f(view, cx))
-    }
-
-    /// Updates the global state of the given type.
-    pub fn update_global<G, R>(&mut self, f: impl FnOnce(&mut G, &mut Self) -> R) -> R
-    where
-        G: Global,
-    {
-        let mut global = self.app.lease_global::<G>();
-        let result = f(&mut global, self);
-        self.app.end_global_lease(global);
-        result
     }
 
     /// Register a callback to be invoked when the given global state changes.

@@ -1,8 +1,4 @@
-use crate::{
-    db::{ExtensionMetadata, NewExtensionVersion},
-    executor::Executor,
-    AppState, Error, Result,
-};
+use crate::{db::NewExtensionVersion, AppState, Error, Result};
 use anyhow::{anyhow, Context as _};
 use aws_sdk_s3::presigning::PresigningConfig;
 use axum::{
@@ -13,7 +9,8 @@ use axum::{
     Extension, Json, Router,
 };
 use collections::HashMap;
-use serde::{Deserialize, Serialize};
+use rpc::{ExtensionApiManifest, GetExtensionsResponse};
+use serde::Deserialize;
 use std::{sync::Arc, time::Duration};
 use time::PrimitiveDateTime;
 use util::ResultExt;
@@ -21,6 +18,11 @@ use util::ResultExt;
 pub fn router() -> Router {
     Router::new()
         .route("/extensions", get(get_extensions))
+        .route("/extensions/:extension_id", get(get_extension_versions))
+        .route(
+            "/extensions/:extension_id/download",
+            get(download_latest_extension),
+        )
         .route(
             "/extensions/:extension_id/:version/download",
             get(download_extension),
@@ -30,34 +32,78 @@ pub fn router() -> Router {
 #[derive(Debug, Deserialize)]
 struct GetExtensionsParams {
     filter: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct DownloadExtensionParams {
-    extension_id: String,
-    version: String,
-}
-
-#[derive(Debug, Serialize)]
-struct GetExtensionsResponse {
-    pub data: Vec<ExtensionMetadata>,
-}
-
-#[derive(Deserialize)]
-struct ExtensionManifest {
-    name: String,
-    version: String,
-    description: Option<String>,
-    authors: Vec<String>,
-    repository: String,
+    #[serde(default)]
+    ids: Option<String>,
+    #[serde(default)]
+    max_schema_version: i32,
 }
 
 async fn get_extensions(
     Extension(app): Extension<Arc<AppState>>,
     Query(params): Query<GetExtensionsParams>,
 ) -> Result<Json<GetExtensionsResponse>> {
-    let extensions = app.db.get_extensions(params.filter.as_deref(), 500).await?;
+    let extension_ids = params
+        .ids
+        .as_ref()
+        .map(|s| s.split(',').map(|s| s.trim()).collect::<Vec<_>>());
+
+    let extensions = if let Some(extension_ids) = extension_ids {
+        app.db
+            .get_extensions_by_ids(&extension_ids, params.max_schema_version)
+            .await?
+    } else {
+        app.db
+            .get_extensions(params.filter.as_deref(), params.max_schema_version, 500)
+            .await?
+    };
+
     Ok(Json(GetExtensionsResponse { data: extensions }))
+}
+
+#[derive(Debug, Deserialize)]
+struct GetExtensionVersionsParams {
+    extension_id: String,
+}
+
+async fn get_extension_versions(
+    Extension(app): Extension<Arc<AppState>>,
+    Path(params): Path<GetExtensionVersionsParams>,
+) -> Result<Json<GetExtensionsResponse>> {
+    let extension_versions = app.db.get_extension_versions(&params.extension_id).await?;
+
+    Ok(Json(GetExtensionsResponse {
+        data: extension_versions,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct DownloadLatestExtensionParams {
+    extension_id: String,
+}
+
+async fn download_latest_extension(
+    Extension(app): Extension<Arc<AppState>>,
+    Path(params): Path<DownloadLatestExtensionParams>,
+) -> Result<Redirect> {
+    let extension = app
+        .db
+        .get_extension(&params.extension_id)
+        .await?
+        .ok_or_else(|| anyhow!("unknown extension"))?;
+    download_extension(
+        Extension(app),
+        Path(DownloadExtensionParams {
+            extension_id: params.extension_id,
+            version: extension.manifest.version.to_string(),
+        }),
+    )
+    .await
+}
+
+#[derive(Debug, Deserialize)]
+struct DownloadExtensionParams {
+    extension_id: String,
+    version: String,
 }
 
 async fn download_extension(
@@ -108,7 +154,7 @@ async fn download_extension(
 const EXTENSION_FETCH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const EXTENSION_DOWNLOAD_URL_LIFETIME: Duration = Duration::from_secs(3 * 60);
 
-pub fn fetch_extensions_from_blob_store_periodically(app_state: Arc<AppState>, executor: Executor) {
+pub fn fetch_extensions_from_blob_store_periodically(app_state: Arc<AppState>) {
     let Some(blob_store_client) = app_state.blob_store_client.clone() else {
         log::info!("no blob store client");
         return;
@@ -118,6 +164,7 @@ pub fn fetch_extensions_from_blob_store_periodically(app_state: Arc<AppState>, e
         return;
     };
 
+    let executor = app_state.executor.clone();
     executor.spawn_detached({
         let executor = executor.clone();
         async move {
@@ -239,7 +286,7 @@ async fn fetch_extension_manifest(
         })?
         .to_vec();
     let manifest =
-        serde_json::from_slice::<ExtensionManifest>(&manifest_bytes).with_context(|| {
+        serde_json::from_slice::<ExtensionApiManifest>(&manifest_bytes).with_context(|| {
             format!(
                 "invalid manifest for extension {extension_id} version {version}: {}",
                 String::from_utf8_lossy(&manifest_bytes)
@@ -259,6 +306,8 @@ async fn fetch_extension_manifest(
         description: manifest.description.unwrap_or_default(),
         authors: manifest.authors,
         repository: manifest.repository,
+        schema_version: manifest.schema_version.unwrap_or(0),
+        wasm_api_version: manifest.wasm_api_version,
         published_at,
     })
 }
